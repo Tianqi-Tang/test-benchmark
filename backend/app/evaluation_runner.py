@@ -11,6 +11,9 @@ from .prompt_builder import build_prompt
 from .scoring import score_answer
 
 
+PROGRESS_COMPLETED_STATUSES = ("completed", "failed")
+
+
 def start_evaluation_run(run_id: int) -> None:
     thread = Thread(target=run_evaluation, args=(run_id,), daemon=True)
     thread.start()
@@ -156,7 +159,7 @@ def _refresh_run_progress(db, run_id: int, commit: bool = True) -> None:
     completed_count = db.scalar(
         select(func.count(EvaluationResult.id)).where(
             EvaluationResult.evaluation_run_id == run_id,
-            EvaluationResult.status.in_(["completed", "failed", "stopped"]),
+            EvaluationResult.status.in_(PROGRESS_COMPLETED_STATUSES),
         )
     ) or 0
     correct_count = db.scalar(

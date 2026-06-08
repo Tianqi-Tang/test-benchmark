@@ -318,13 +318,8 @@ def list_evaluation_results(run_id: int, db: Session = Depends(get_db)) -> list[
 
 @app.get("/api/dashboard/model-scores", response_model=list[ModelScoreOut])
 def list_model_scores(db: Session = Depends(get_db)) -> list[ModelScoreOut]:
-    model_ids = db.scalars(select(EvaluationResult.model_config_id).distinct()).all()
-    if not model_ids:
-        return []
-
     model_configs = db.scalars(
         select(ModelConfig)
-        .where(ModelConfig.id.in_(model_ids))
         .order_by(ModelConfig.name)
     ).all()
     return [_model_score_out(db, row) for row in model_configs]

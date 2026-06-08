@@ -2,7 +2,9 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.database import _database_url
-from app.main import _capability_values, app
+from app.evaluation_runner import PROGRESS_COMPLETED_STATUSES
+from app.main import _capability_values, _model_score_out, app
+from app.models import ModelConfig
 from app.scoring import normalize_choice
 
 
@@ -42,3 +44,33 @@ def test_choice_answer_extraction():
 def test_capability_values_parse_multiple_capabilities():
     assert _capability_values("text,vision") == {"text", "vision"}
     assert _capability_values(" text , vision , ") == {"text", "vision"}
+
+
+def test_model_score_out_includes_unevaluated_model():
+    class EmptyDb:
+        def scalar(self, _statement):
+            return None
+
+    model = ModelConfig(
+        id=12,
+        name="Gemini Test",
+        provider="gemini",
+        model="gemini-3.5-flash",
+        capability="text,vision",
+        enabled=True,
+        max_output_tokens=2048,
+    )
+
+    score = _model_score_out(EmptyDb(), model)
+
+    assert score.modelConfigId == 12
+    assert score.modelName == "Gemini Test"
+    assert score.latestRunId is None
+    assert score.scoredCount == 0
+    assert score.accuracy == 0.0
+
+
+def test_stopped_results_do_not_count_as_progress_completed():
+    assert "completed" in PROGRESS_COMPLETED_STATUSES
+    assert "failed" in PROGRESS_COMPLETED_STATUSES
+    assert "stopped" not in PROGRESS_COMPLETED_STATUSES

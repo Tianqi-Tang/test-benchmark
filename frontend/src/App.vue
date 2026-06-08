@@ -232,6 +232,18 @@ const modelOptionsForForm = computed(() => {
 const modelDialogTitle = computed(() => (isEditingModel.value ? '编辑模型' : '新增模型'));
 const detailRun = computed(() => runs.value.find((run) => run.id === detailRunId.value) ?? null);
 const scoredModelScores = computed(() => modelScores.value.filter((score) => score.scoredCount > 0));
+const evaluatedModelScores = computed(() => modelScores.value.filter((score) => score.latestRunId));
+const sortedModelScores = computed(() => {
+  return [...modelScores.value].sort((left, right) => {
+    if (left.scoredCount && right.scoredCount) {
+      if (right.accuracy !== left.accuracy) return right.accuracy - left.accuracy;
+      return right.scoredCount - left.scoredCount;
+    }
+    if (left.scoredCount) return -1;
+    if (right.scoredCount) return 1;
+    return left.modelName.localeCompare(right.modelName, 'zh-Hans-CN');
+  });
+});
 const averageModelAccuracy = computed(() => {
   if (!scoredModelScores.value.length) return 0;
   const total = scoredModelScores.value.reduce((sum, score) => sum + score.accuracy, 0);
@@ -648,6 +660,12 @@ function modelScoreBarWidth(score: ModelScore) {
   return `${Math.max(3, Math.round(score.accuracy * 100))}%`;
 }
 
+function modelScoreStatus(score: ModelScore) {
+  if (!score.latestRunId) return '未评测';
+  if (!score.scoredCount) return '无可评分结果';
+  return formatPercent(score.accuracy);
+}
+
 function formatStatus(value: string) {
   const labels: Record<string, string> = {
     pending: '等待中',
@@ -657,6 +675,11 @@ function formatStatus(value: string) {
     stopped: '已结束',
   };
   return labels[value] ?? value;
+}
+
+function statusBadgeClass(value: string) {
+  const normalized = value || 'pending';
+  return `status-badge status-badge-${normalized}`;
 }
 
 function formatOptionalStatus(value: string | null) {
@@ -990,34 +1013,53 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
       <div class="section-head">
         <div>
           <h2>结果看板</h2>
-          <p>按模型展示最近一次参与评测的得分。</p>
+          <p>默认展示全部模型，并按最近一次评测记录汇总得分。</p>
         </div>
         <button type="button" class="secondary" :disabled="loading" @click="loadModelScores">刷新看板</button>
       </div>
 
       <div class="dashboard-summary">
         <div>
-          <span>已评测模型</span>
-          <strong>{{ scoredModelScores.length }}</strong>
+          <span>全部模型</span>
+          <strong>{{ modelScores.length }}</strong>
         </div>
         <div>
-          <span>平均准确率</span>
-          <strong>{{ formatPercent(averageModelAccuracy) }}</strong>
+          <span>已评测 / 应评测</span>
+          <strong>{{ evaluatedModelScores.length }} / {{ modelScores.length }}</strong>
         </div>
         <div>
           <span>当前最高分</span>
           <strong>{{ bestModelScore ? `${bestModelScore.modelName} · ${formatPercent(bestModelScore.accuracy)}` : '-' }}</strong>
         </div>
+        <div>
+          <span>平均准确率</span>
+          <strong>{{ scoredModelScores.length ? formatPercent(averageModelAccuracy) : '-' }}</strong>
+        </div>
       </div>
 
       <div class="score-board">
-        <article v-for="score in modelScores" :key="score.modelConfigId" class="score-row">
+        <article
+          v-for="score in sortedModelScores"
+          :key="score.modelConfigId"
+          class="score-row"
+          :class="{ 'score-row-empty': !score.latestRunId || !score.scoredCount }"
+        >
           <div class="score-main">
             <div>
               <h3>{{ score.modelName }}</h3>
               <p>{{ providerLabel(score.provider) }} · {{ score.model }}</p>
             </div>
-            <strong>{{ score.scoredCount ? formatPercent(score.accuracy) : '未评分' }}</strong>
+            <div class="score-result">
+              <strong>{{ modelScoreStatus(score) }}</strong>
+              <button
+                type="button"
+                class="secondary compact"
+                :disabled="!score.latestRunId || loading"
+                @click="score.latestRunId && openRunDetails(score.latestRunId)"
+              >
+                明细
+              </button>
+            </div>
           </div>
           <div class="score-bar" aria-hidden="true">
             <span :style="{ width: score.scoredCount ? modelScoreBarWidth(score) : '0%' }"></span>
@@ -1031,7 +1073,7 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
           </div>
         </article>
         <div v-if="!modelScores.length" class="empty dashboard-empty">
-          暂无模型评测结果
+          暂无模型配置
         </div>
       </div>
     </section>
@@ -1064,79 +1106,83 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
             <div class="progress-bar"><span :style="{ width: `${progressPercent(detailRun)}%` }"></span></div>
           </div>
 
-          <table class="results-table">
-            <thead>
-              <tr>
-                <th>模型</th>
-                <th>状态</th>
-                <th>题目</th>
-                <th>标准答案</th>
-                <th>提取答案</th>
-                <th>结果</th>
-                <th>耗时</th>
-                <th>问答记录</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="result in resultsForRun(detailRun.id)" :key="result.id">
+          <div class="modal-table-scroll">
+            <table class="results-table results-table-sticky">
+              <thead>
                 <tr>
-                  <td>{{ result.modelName || result.modelConfigId }}</td>
-                  <td>{{ formatStatus(result.status) }}</td>
-                  <td class="wide-cell">
-                    <p>{{ result.question }}</p>
-                  </td>
-                  <td>{{ result.expectedAnswer }}</td>
-                  <td>{{ result.extractedAnswer || '-' }}</td>
-                  <td>
-                    <span v-if="result.isCorrect === true" class="tag ok">正确</span>
-                    <span v-else-if="result.isCorrect === false" class="tag bad">错误</span>
-                    <span v-else class="tag muted">待复核</span>
-                  </td>
-                  <td>{{ result.latencyMs ? `${result.latencyMs}ms` : '-' }}</td>
-                  <td>
-                    <button type="button" class="secondary" @click="toggleResultRecord(result.id)">
-                      {{ expandedResultId === result.id ? '收起记录' : '查看记录' }}
-                    </button>
-                  </td>
+                  <th>模型</th>
+                  <th>题目</th>
+                  <th>标准答案</th>
+                  <th>提取答案</th>
+                  <th>状态</th>
+                  <th>结果</th>
+                  <th>耗时</th>
+                  <th>问答记录</th>
                 </tr>
-                <tr v-if="expandedResultId === result.id" class="record-row">
-                  <td colspan="8">
-                    <div class="record-panel">
-                      <section>
-                        <h3>发送给模型的内容</h3>
-                        <pre>{{ result.prompt }}</pre>
-                      </section>
-                      <section>
-                        <h3>AI 回复</h3>
-                        <pre>{{ result.modelAnswer || '暂无回复' }}</pre>
-                      </section>
-                      <section v-if="result.errorMessage">
-                        <h3>错误信息</h3>
-                        <pre>{{ result.errorMessage }}</pre>
-                      </section>
-                      <section class="record-grid">
-                        <div>
-                          <span>标准答案</span>
-                          <strong>{{ result.expectedAnswer }}</strong>
-                        </div>
-                        <div>
-                          <span>提取答案</span>
-                          <strong>{{ result.extractedAnswer || '-' }}</strong>
-                        </div>
-                        <div>
-                          <span>题目类型</span>
-                          <strong>{{ result.questionType || '-' }}</strong>
-                        </div>
-                      </section>
-                    </div>
-                  </td>
+              </thead>
+              <tbody>
+                <template v-for="result in resultsForRun(detailRun.id)" :key="result.id">
+                  <tr>
+                    <td>{{ result.modelName || result.modelConfigId }}</td>
+                    <td class="wide-cell">
+                      <p>{{ result.question }}</p>
+                    </td>
+                    <td>{{ result.expectedAnswer }}</td>
+                    <td>{{ result.extractedAnswer || '-' }}</td>
+                    <td>
+                      <span :class="statusBadgeClass(result.status)">{{ formatStatus(result.status) }}</span>
+                    </td>
+                    <td>
+                      <span v-if="result.isCorrect === true" class="tag ok">正确</span>
+                      <span v-else-if="result.isCorrect === false" class="tag bad">错误</span>
+                      <span v-else class="tag muted">待复核</span>
+                    </td>
+                    <td>{{ result.latencyMs ? `${result.latencyMs}ms` : '-' }}</td>
+                    <td>
+                      <button type="button" class="secondary" @click="toggleResultRecord(result.id)">
+                        {{ expandedResultId === result.id ? '收起记录' : '查看记录' }}
+                      </button>
+                    </td>
+                  </tr>
+                  <tr v-if="expandedResultId === result.id" class="record-row">
+                    <td colspan="8">
+                      <div class="record-panel">
+                        <section>
+                          <h3>发送给模型的内容</h3>
+                          <pre>{{ result.prompt }}</pre>
+                        </section>
+                        <section>
+                          <h3>AI 回复</h3>
+                          <pre>{{ result.modelAnswer || '暂无回复' }}</pre>
+                        </section>
+                        <section v-if="result.errorMessage">
+                          <h3>错误信息</h3>
+                          <pre>{{ result.errorMessage }}</pre>
+                        </section>
+                        <section class="record-grid">
+                          <div>
+                            <span>标准答案</span>
+                            <strong>{{ result.expectedAnswer }}</strong>
+                          </div>
+                          <div>
+                            <span>提取答案</span>
+                            <strong>{{ result.extractedAnswer || '-' }}</strong>
+                          </div>
+                          <div>
+                            <span>题目类型</span>
+                            <strong>{{ result.questionType || '-' }}</strong>
+                          </div>
+                        </section>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
+                <tr v-if="!resultsForRun(detailRun.id).length">
+                  <td colspan="8" class="empty">暂无明细</td>
                 </tr>
-              </template>
-              <tr v-if="!resultsForRun(detailRun.id).length">
-                <td colspan="8" class="empty">暂无明细</td>
-              </tr>
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
     </div>
