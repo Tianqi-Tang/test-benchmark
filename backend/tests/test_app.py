@@ -28,6 +28,35 @@ def test_api_health_endpoint():
     assert response.json()["service"] == "test-benchmark"
 
 
+def test_business_api_requires_auth_configuration(monkeypatch):
+    monkeypatch.delenv("TEST_BENCHMARK_AUTH_PASSWORD", raising=False)
+    client = TestClient(app)
+
+    response = client.get("/api/models")
+
+    assert response.status_code == 503
+
+
+def test_login_sets_session_cookie(monkeypatch):
+    monkeypatch.setenv("TEST_BENCHMARK_AUTH_PASSWORD", "local-secret")
+    client = TestClient(app)
+
+    response = client.post("/api/auth/login", json={"password": "local-secret"})
+
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
+    assert "test_benchmark_session" in response.cookies
+
+
+def test_login_rejects_wrong_password(monkeypatch):
+    monkeypatch.setenv("TEST_BENCHMARK_AUTH_PASSWORD", "local-secret")
+    client = TestClient(app)
+
+    response = client.post("/api/auth/login", json={"password": "wrong"})
+
+    assert response.status_code == 401
+
+
 def test_database_url_requires_postgresql(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "sqlite:///local.db")
 

@@ -6,6 +6,15 @@ from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class LoginRequest(BaseModel):
+    password: str = Field(min_length=1)
+
+
+class SessionOut(BaseModel):
+    authenticated: bool
+    authConfigured: bool
+
+
 class ModelConfigCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     provider: str = Field(min_length=1, max_length=80)

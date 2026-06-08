@@ -16,6 +16,7 @@ bin/local-dev.sh stop
 - Web: `http://localhost:18110/`
 - Backend health: `http://localhost:18111/health`
 - PostgreSQL: `localhost:18112`
+- 本地默认登录密码：`12345`
 
 本地前端使用根路径 `/`。测试环境为了和同一台服务器上的其他项目共存，公网访问路径使用 `/test-benchmark/`。
 
@@ -46,6 +47,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 export DATABASE_URL=postgresql+psycopg://test_benchmark:test_benchmark@localhost:18112/test_benchmark
 export BENCHMARK_DATA_DIR=../data/benchmarks
+export TEST_BENCHMARK_AUTH_PASSWORD=12345
+export TEST_BENCHMARK_AUTH_SECRET=test-benchmark-local-secret
 uvicorn app.main:app --reload --port 18111
 ```
 

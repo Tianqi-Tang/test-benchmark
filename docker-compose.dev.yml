@@ -27,6 +27,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://test_benchmark:test_benchmark@postgres:5432/test_benchmark
       BENCHMARK_DATA_DIR: /data/benchmarks
+      TEST_BENCHMARK_AUTH_PASSWORD: ${TEST_BENCHMARK_AUTH_PASSWORD:-12345}
+      TEST_BENCHMARK_AUTH_SECRET: ${TEST_BENCHMARK_AUTH_SECRET:-test-benchmark-local-secret}
       PORT: "8000"
     ports:
       - "${TEST_BENCHMARK_BACKEND_HOST_PORT:-18111}:8000"

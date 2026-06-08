@@ -70,6 +70,11 @@ jobs:
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
             "mkdir -p '$DEPLOY_PATH'"
 
+      - name: Validate deploy secrets
+        run: |
+          test -n "${{ secrets.TEST_BENCHMARK_AUTH_PASSWORD }}"
+          test -n "${{ secrets.TEST_BENCHMARK_AUTH_SECRET }}"
+
       - name: Upload project
         run: |
           rsync -az --delete \
@@ -80,6 +85,19 @@ jobs:
             --exclude ".DS_Store" \
             --exclude "data/" \
             ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Write deploy environment
+        env:
+          TEST_BENCHMARK_AUTH_PASSWORD: ${{ secrets.TEST_BENCHMARK_AUTH_PASSWORD }}
+          TEST_BENCHMARK_AUTH_SECRET: ${{ secrets.TEST_BENCHMARK_AUTH_SECRET }}
+        run: |
+          {
+            printf 'TEST_BENCHMARK_AUTH_PASSWORD=%s\n' "$TEST_BENCHMARK_AUTH_PASSWORD"
+            printf 'TEST_BENCHMARK_AUTH_SECRET=%s\n' "$TEST_BENCHMARK_AUTH_SECRET"
+          } > /tmp/test-benchmark.env
+          rsync -az \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            /tmp/test-benchmark.env "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/.env"
 
       - name: Restart service
         run: |

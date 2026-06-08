@@ -4,12 +4,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+from typing import Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from .auth import AUTH_COOKIE_NAME, auth_configured, login, logout, require_session, session_is_active
 from .benchmark_importer import BenchmarkImportError, import_custom_medical_eval_sets, import_jsonl_lines
 from .database import get_db, init_db
 from .evaluation_runner import prepare_run_items, start_evaluation_run, stop_evaluation_run
@@ -23,11 +25,13 @@ from .schemas import (
     EvaluationRunCreate,
     EvaluationRunOut,
     ImportResultOut,
+    LoginRequest,
     ModelConfigCreate,
     ModelConfigOut,
     ModelConfigUpdate,
     ModelScoreOut,
     ModelTestOut,
+    SessionOut,
 )
 
 
@@ -55,14 +59,31 @@ def api_health() -> dict[str, str]:
     return health()
 
 
+@app.get("/api/auth/session", response_model=SessionOut)
+def get_auth_session(session_token: Optional[str] = Cookie(default=None, alias=AUTH_COOKIE_NAME)) -> SessionOut:
+    return SessionOut(authenticated=session_is_active(session_token), authConfigured=auth_configured())
+
+
+@app.post("/api/auth/login", response_model=SessionOut)
+def login_user(payload: LoginRequest, response: Response) -> SessionOut:
+    login(payload.password, response)
+    return SessionOut(authenticated=True, authConfigured=True)
+
+
+@app.post("/api/auth/logout", response_model=SessionOut)
+def logout_user(response: Response) -> SessionOut:
+    logout(response)
+    return SessionOut(authenticated=False, authConfigured=auth_configured())
+
+
 @app.get("/api/models", response_model=list[ModelConfigOut])
-def list_models(db: Session = Depends(get_db)) -> list[ModelConfigOut]:
+def list_models(_: None = Depends(require_session), db: Session = Depends(get_db)) -> list[ModelConfigOut]:
     rows = db.scalars(select(ModelConfig).order_by(ModelConfig.created_at.desc())).all()
     return [_model_out(row) for row in rows]
 
 
 @app.post("/api/models", response_model=ModelConfigOut)
-def create_model(payload: ModelConfigCreate, db: Session = Depends(get_db)) -> ModelConfigOut:
+def create_model(payload: ModelConfigCreate, _: None = Depends(require_session), db: Session = Depends(get_db)) -> ModelConfigOut:
     model_config = ModelConfig(
         name=payload.name.strip(),
         provider=payload.provider.strip(),
@@ -84,12 +105,12 @@ def create_model(payload: ModelConfigCreate, db: Session = Depends(get_db)) -> M
 
 
 @app.get("/api/models/{model_id}", response_model=ModelConfigOut)
-def get_model(model_id: int, db: Session = Depends(get_db)) -> ModelConfigOut:
+def get_model(model_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> ModelConfigOut:
     return _model_out(_get_model_or_404(db, model_id))
 
 
 @app.put("/api/models/{model_id}", response_model=ModelConfigOut)
-def update_model(model_id: int, payload: ModelConfigUpdate, db: Session = Depends(get_db)) -> ModelConfigOut:
+def update_model(model_id: int, payload: ModelConfigUpdate, _: None = Depends(require_session), db: Session = Depends(get_db)) -> ModelConfigOut:
     model_config = _get_model_or_404(db, model_id)
     updated_fields = payload.model_fields_set
     if "name" in updated_fields and payload.name is not None:
@@ -121,7 +142,7 @@ def update_model(model_id: int, payload: ModelConfigUpdate, db: Session = Depend
 
 
 @app.post("/api/models/{model_id}/test", response_model=ModelTestOut)
-def test_model(model_id: int, db: Session = Depends(get_db)) -> ModelTestOut:
+def test_model(model_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> ModelTestOut:
     model_config = _get_model_or_404(db, model_id)
     result = call_model(model_config, "Reply with exactly: OK", max_output_tokens=20)
     model_config.last_test_status = "success" if result.ok else "failed"
@@ -135,13 +156,13 @@ def test_model(model_id: int, db: Session = Depends(get_db)) -> ModelTestOut:
 
 
 @app.get("/api/benchmark-sets", response_model=list[BenchmarkSetOut])
-def list_benchmark_sets(db: Session = Depends(get_db)) -> list[BenchmarkSetOut]:
+def list_benchmark_sets(_: None = Depends(require_session), db: Session = Depends(get_db)) -> list[BenchmarkSetOut]:
     rows = db.scalars(select(BenchmarkSet).order_by(BenchmarkSet.created_at.desc())).all()
     return [_benchmark_set_out(row) for row in rows]
 
 
 @app.post("/api/benchmark-sets/import/custom-medical", response_model=ImportResultOut)
-def import_custom_medical(db: Session = Depends(get_db)) -> ImportResultOut:
+def import_custom_medical(_: None = Depends(require_session), db: Session = Depends(get_db)) -> ImportResultOut:
     try:
         sets = import_custom_medical_eval_sets(db)
     except FileNotFoundError as exc:
@@ -153,7 +174,11 @@ def import_custom_medical(db: Session = Depends(get_db)) -> ImportResultOut:
 
 
 @app.post("/api/benchmark-sets/import/jsonl", response_model=ImportResultOut)
-async def import_jsonl_benchmark(file: UploadFile = File(...), db: Session = Depends(get_db)) -> ImportResultOut:
+async def import_jsonl_benchmark(
+    file: UploadFile = File(...),
+    _: None = Depends(require_session),
+    db: Session = Depends(get_db),
+) -> ImportResultOut:
     filename = Path(file.filename or "benchmark.jsonl").name
     if not filename.lower().endswith(".jsonl"):
         raise HTTPException(status_code=400, detail="Only JSONL files are supported.")
@@ -174,7 +199,7 @@ async def import_jsonl_benchmark(file: UploadFile = File(...), db: Session = Dep
 
 
 @app.get("/api/benchmark-sets/{benchmark_set_id}", response_model=BenchmarkSetOut)
-def get_benchmark_set(benchmark_set_id: int, db: Session = Depends(get_db)) -> BenchmarkSetOut:
+def get_benchmark_set(benchmark_set_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> BenchmarkSetOut:
     return _benchmark_set_out(_get_benchmark_set_or_404(db, benchmark_set_id))
 
 
@@ -183,6 +208,7 @@ def list_questions(
     benchmark_set_id: int,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    _: None = Depends(require_session),
     db: Session = Depends(get_db),
 ) -> list[BenchmarkQuestionOut]:
     _get_benchmark_set_or_404(db, benchmark_set_id)
@@ -197,7 +223,12 @@ def list_questions(
 
 
 @app.put("/api/benchmark-questions/{question_id}", response_model=BenchmarkQuestionOut)
-def update_question(question_id: int, payload: BenchmarkQuestionUpdate, db: Session = Depends(get_db)) -> BenchmarkQuestionOut:
+def update_question(
+    question_id: int,
+    payload: BenchmarkQuestionUpdate,
+    _: None = Depends(require_session),
+    db: Session = Depends(get_db),
+) -> BenchmarkQuestionOut:
     question = db.get(BenchmarkQuestion, question_id)
     if question is None:
         raise HTTPException(status_code=404, detail="Benchmark question not found.")
@@ -222,7 +253,7 @@ def update_question(question_id: int, payload: BenchmarkQuestionUpdate, db: Sess
 
 
 @app.delete("/api/benchmark-questions/{question_id}")
-def delete_question(question_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
+def delete_question(question_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> dict[str, bool]:
     question = db.get(BenchmarkQuestion, question_id)
     if question is None:
         raise HTTPException(status_code=404, detail="Benchmark question not found.")
@@ -235,7 +266,7 @@ def delete_question(question_id: int, db: Session = Depends(get_db)) -> dict[str
 
 
 @app.post("/api/evaluation-runs", response_model=EvaluationRunOut)
-def create_evaluation_run(payload: EvaluationRunCreate, db: Session = Depends(get_db)) -> EvaluationRunOut:
+def create_evaluation_run(payload: EvaluationRunCreate, _: None = Depends(require_session), db: Session = Depends(get_db)) -> EvaluationRunOut:
     benchmark_set = _get_benchmark_set_or_404(db, payload.benchmarkSetId)
     questions = db.scalars(
         select(BenchmarkQuestion)
@@ -268,7 +299,7 @@ def create_evaluation_run(payload: EvaluationRunCreate, db: Session = Depends(ge
 
 
 @app.get("/api/evaluation-runs", response_model=list[EvaluationRunOut])
-def list_evaluation_runs(db: Session = Depends(get_db)) -> list[EvaluationRunOut]:
+def list_evaluation_runs(_: None = Depends(require_session), db: Session = Depends(get_db)) -> list[EvaluationRunOut]:
     rows = db.scalars(
         select(EvaluationRun)
         .options(selectinload(EvaluationRun.benchmark_set))
@@ -279,7 +310,7 @@ def list_evaluation_runs(db: Session = Depends(get_db)) -> list[EvaluationRunOut
 
 
 @app.get("/api/evaluation-runs/{run_id}", response_model=EvaluationRunOut)
-def get_evaluation_run(run_id: int, db: Session = Depends(get_db)) -> EvaluationRunOut:
+def get_evaluation_run(run_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> EvaluationRunOut:
     run = db.scalar(
         select(EvaluationRun)
         .options(selectinload(EvaluationRun.benchmark_set))
@@ -291,7 +322,7 @@ def get_evaluation_run(run_id: int, db: Session = Depends(get_db)) -> Evaluation
 
 
 @app.post("/api/evaluation-runs/{run_id}/stop", response_model=EvaluationRunOut)
-def stop_run(run_id: int, db: Session = Depends(get_db)) -> EvaluationRunOut:
+def stop_run(run_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> EvaluationRunOut:
     run = db.scalar(
         select(EvaluationRun)
         .options(selectinload(EvaluationRun.benchmark_set))
@@ -304,7 +335,7 @@ def stop_run(run_id: int, db: Session = Depends(get_db)) -> EvaluationRunOut:
 
 
 @app.get("/api/evaluation-runs/{run_id}/results", response_model=list[EvaluationResultOut])
-def list_evaluation_results(run_id: int, db: Session = Depends(get_db)) -> list[EvaluationResultOut]:
+def list_evaluation_results(run_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> list[EvaluationResultOut]:
     if db.get(EvaluationRun, run_id) is None:
         raise HTTPException(status_code=404, detail="Evaluation run not found.")
     rows = db.scalars(
@@ -317,7 +348,7 @@ def list_evaluation_results(run_id: int, db: Session = Depends(get_db)) -> list[
 
 
 @app.get("/api/dashboard/model-scores", response_model=list[ModelScoreOut])
-def list_model_scores(db: Session = Depends(get_db)) -> list[ModelScoreOut]:
+def list_model_scores(_: None = Depends(require_session), db: Session = Depends(get_db)) -> list[ModelScoreOut]:
     model_configs = db.scalars(
         select(ModelConfig)
         .order_by(ModelConfig.name)

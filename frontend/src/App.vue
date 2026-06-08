@@ -84,6 +84,11 @@ type ModelScore = {
   accuracy: number;
 };
 
+type SessionState = {
+  authenticated: boolean;
+  authConfigured: boolean;
+};
+
 type Capability = 'text' | 'vision';
 
 type ProviderOption = {
@@ -127,9 +132,15 @@ const runDialogOpen = ref(false);
 const detailRunId = ref<number | null>(null);
 const expandedResultId = ref<number | null>(null);
 const testingModelIds = ref<Set<number>>(new Set());
+const authChecked = ref(false);
+const authenticated = ref(false);
 const loading = ref(false);
 const notice = ref('');
 const error = ref('');
+
+const loginForm = reactive({
+  password: '',
+});
 
 const modelForm = reactive({
   name: '',
@@ -257,10 +268,7 @@ const bestModelScore = computed(() => {
   }, null);
 });
 
-onMounted(async () => {
-  await refreshAll();
-  pollTimer = window.setInterval(refreshRunsAndResults, 3000);
-});
+onMounted(checkSession);
 
 onUnmounted(() => {
   if (pollTimer) window.clearInterval(pollTimer);
@@ -269,9 +277,14 @@ onUnmounted(() => {
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const isFormData = options?.body instanceof FormData;
   const response = await fetch(apiUrl(url), {
+    credentials: 'include',
     headers: { ...(isFormData ? {} : { 'Content-Type': 'application/json' }), ...(options?.headers ?? {}) },
     ...options,
   });
+  if (response.status === 401) {
+    authenticated.value = false;
+    stopPolling();
+  }
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;
     try {
@@ -292,6 +305,80 @@ function apiUrl(url: string) {
   if (!url.startsWith('/api')) return url;
   const base = appBasePath.endsWith('/') ? appBasePath.slice(0, -1) : appBasePath;
   return `${base}${url}`;
+}
+
+async function checkSession() {
+  loading.value = true;
+  error.value = '';
+  try {
+    const session = await api<SessionState>('/api/auth/session');
+    authenticated.value = session.authenticated;
+    authChecked.value = true;
+    if (!session.authConfigured) {
+      error.value = '服务端未配置登录密码，请设置 TEST_BENCHMARK_AUTH_PASSWORD';
+      return;
+    }
+    if (session.authenticated) {
+      await refreshAll();
+      startPolling();
+    }
+  } catch (err) {
+    authChecked.value = true;
+    error.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function loginUser() {
+  await withLoading(async () => {
+    const session = await api<SessionState>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ password: loginForm.password }),
+    });
+    authenticated.value = session.authenticated;
+    loginForm.password = '';
+    notice.value = '已登录';
+    await refreshAll();
+    startPolling();
+  });
+}
+
+async function logoutUser() {
+  await withLoading(async () => {
+    await api<SessionState>('/api/auth/logout', { method: 'POST' });
+    authenticated.value = false;
+    stopPolling();
+    notice.value = '';
+    clearWorkspaceState();
+  });
+}
+
+function startPolling() {
+  stopPolling();
+  pollTimer = window.setInterval(refreshRunsAndResults, 3000);
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    window.clearInterval(pollTimer);
+    pollTimer = undefined;
+  }
+}
+
+function clearWorkspaceState() {
+  models.value = [];
+  benchmarkSets.value = [];
+  questions.value = [];
+  runs.value = [];
+  modelScores.value = [];
+  runResults.value = {};
+  selectedBenchmarkSetId.value = null;
+  selectedModelIds.value = [];
+  detailRunId.value = null;
+  expandedResultId.value = null;
+  modelDialogOpen.value = false;
+  runDialogOpen.value = false;
 }
 
 async function refreshAll() {
@@ -795,10 +882,43 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
         <h1>test-benchmark</h1>
         <p>医疗模型评测工作台</p>
       </div>
-      <div class="health-pill">API / PostgreSQL / Evaluation</div>
+      <div class="topbar-actions">
+        <button v-if="authenticated" type="button" class="secondary" :disabled="loading" @click="logoutUser">
+          退出登录
+        </button>
+        <div class="health-pill">API / PostgreSQL / Evaluation</div>
+      </div>
     </header>
 
-    <nav class="tabs" aria-label="primary">
+    <div v-if="notice" class="notice success">{{ notice }}</div>
+    <div v-if="error" class="notice error">{{ error }}</div>
+
+    <section v-if="authChecked && !authenticated" class="login-shell">
+      <form class="login-panel" @submit.prevent="loginUser">
+        <h2>登录评测平台</h2>
+        <p>请输入服务端配置的访问密码。</p>
+        <label>
+          访问密码
+          <input
+            v-model="loginForm.password"
+            type="password"
+            autocomplete="current-password"
+            required
+            autofocus
+          />
+        </label>
+        <button type="submit" :disabled="loading || !loginForm.password">
+          {{ loading ? '登录中' : '登录' }}
+        </button>
+      </form>
+    </section>
+
+    <section v-else-if="!authChecked" class="section">
+      <div class="empty">正在检查登录状态...</div>
+    </section>
+
+    <template v-else>
+      <nav class="tabs" aria-label="primary">
       <button
         v-for="tab in tabs"
         :key="tab.id"
@@ -808,10 +928,7 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
       >
         {{ tab.label }}
       </button>
-    </nav>
-
-    <div v-if="notice" class="notice success">{{ notice }}</div>
-    <div v-if="error" class="notice error">{{ error }}</div>
+      </nav>
 
     <section v-if="activeTab === 'models'" class="section">
       <div class="section-head">
@@ -1306,5 +1423,6 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
         </div>
       </section>
     </div>
+    </template>
   </main>
 </template>

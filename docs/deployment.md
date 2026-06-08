@@ -40,6 +40,10 @@ http://20.2.81.240/test-benchmark/
 | Secret | 用途 |
 | --- | --- |
 | `DEPLOY_SSH_KEY` | 连接测试服务器的 SSH 私钥 |
+| `TEST_BENCHMARK_AUTH_PASSWORD` | 测试环境登录密码 |
+| `TEST_BENCHMARK_AUTH_SECRET` | 后端会话 cookie 签名密钥 |
+
+部署流水线会在测试服务器部署目录写入 `.env`，供 Docker Compose 注入鉴权配置。不要把真实密码或签名密钥提交到仓库。
 
 ## Nginx Route
 

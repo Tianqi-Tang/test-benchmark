@@ -85,6 +85,12 @@ button.danger:hover {
   margin-bottom: 16px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 h1,
 h2,
 h3,
@@ -119,6 +125,35 @@ h3 {
   color: var(--muted);
   font-size: 13px;
   white-space: nowrap;
+}
+
+.login-shell {
+  min-height: calc(100vh - 180px);
+  display: grid;
+  place-items: center;
+}
+
+.login-panel {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 24px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+}
+
+.login-panel p {
+  color: var(--muted);
+}
+
+.login-panel label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .tabs {
