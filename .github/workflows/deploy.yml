@@ -32,8 +32,22 @@ jobs:
       - name: Run tests
         run: pytest -q backend/tests
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Build frontend
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          VITE_BASE_PATH=/test-benchmark/ pnpm build
+        working-directory: frontend
+
       - name: Build Docker image
-        run: docker build -t test-benchmark:${{ github.sha }} .
+        run: |
+          docker build -t test-benchmark-backend:${{ github.sha }} -f backend/Dockerfile .
+          docker build -t test-benchmark-frontend:${{ github.sha }} -f frontend/Dockerfile .
 
   deploy:
     name: Deploy Test Environment
@@ -70,16 +84,18 @@ jobs:
       - name: Restart service
         run: |
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            "cd '$DEPLOY_PATH' && docker compose up -d --build"
+            "cd '$DEPLOY_PATH' && docker compose up -d --build --remove-orphans"
 
       - name: Attach service to proxy network
         run: |
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
             "docker network inspect healthbot-proxy >/dev/null 2>&1 || docker network create healthbot-proxy"
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            "docker network connect healthbot-proxy test-benchmark-web >/dev/null 2>&1 || true"
+            "docker network connect healthbot-proxy test-benchmark-frontend >/dev/null 2>&1 || true"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            "docker network connect healthbot-proxy test-benchmark-backend >/dev/null 2>&1 || true"
 
       - name: Verify deployment
         run: |
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            "curl -fsS http://localhost:18110/health"
+            "curl -fsS http://localhost:18111/health && curl -fsS http://localhost:18110/"

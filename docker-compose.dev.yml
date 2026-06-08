@@ -1,7 +1,7 @@
 services:
-  web:
+  backend:
     image: python:3.11-slim
-    container_name: test-benchmark-web-dev
+    container_name: test-benchmark-backend-dev
     working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
@@ -9,11 +9,28 @@ services:
     environment:
       PORT: "8000"
     ports:
-      - "${TEST_BENCHMARK_WEB_HOST_PORT:-18110}:8000"
+      - "${TEST_BENCHMARK_BACKEND_HOST_PORT:-18111}:8000"
     volumes:
       - ./backend:/app
-      - web-pip-cache:/root/.cache/pip
+      - backend-pip-cache:/root/.cache/pip
+    restart: unless-stopped
+
+  frontend:
+    image: node:24-alpine
+    container_name: test-benchmark-frontend-dev
+    working_dir: /app
+    command: sh -c "corepack enable && pnpm install && pnpm dev"
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "${TEST_BENCHMARK_WEB_HOST_PORT:-18110}:18110"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    depends_on:
+      - backend
     restart: unless-stopped
 
 volumes:
-  web-pip-cache:
+  backend-pip-cache:
+  frontend-node-modules:

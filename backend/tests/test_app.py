@@ -13,10 +13,11 @@ def test_health_endpoint():
     assert response.json()["service"] == "test-benchmark"
 
 
-def test_index_page():
+def test_api_health_endpoint():
     client = TestClient(app)
 
-    response = client.get("/")
+    response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert "test-benchmark" in response.text
+    assert response.json()["status"] == "ok"
+    assert response.json()["service"] == "test-benchmark"

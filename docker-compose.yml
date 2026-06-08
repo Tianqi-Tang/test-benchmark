@@ -1,12 +1,24 @@
 services:
-  web:
+  backend:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: test-benchmark:local
-    container_name: test-benchmark-web
+      dockerfile: backend/Dockerfile
+    image: test-benchmark-backend:local
+    container_name: test-benchmark-backend
     environment:
       PORT: "8000"
     ports:
-      - "${TEST_BENCHMARK_WEB_HOST_PORT:-18110}:8000"
+      - "${TEST_BENCHMARK_BACKEND_HOST_PORT:-18111}:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: test-benchmark-frontend:local
+    container_name: test-benchmark-frontend
+    ports:
+      - "${TEST_BENCHMARK_WEB_HOST_PORT:-18110}:80"
+    depends_on:
+      - backend
     restart: unless-stopped

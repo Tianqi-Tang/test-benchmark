@@ -47,17 +47,17 @@ data/benchmarks/
 
 已包含：
 
-- Python Web 服务骨架。
-- 最小 Web 首页。
+- Python 后端 API 骨架。
+- Vue 3 前端骨架。
 - `/health` 健康检查接口。
 - Docker / Docker Compose 本地运行配置。
 - GitHub Actions 测试、构建和测试环境部署流水线。
 
 ## 本地运行
 
-Python 版本对齐为 `3.11`。本地宿主机端口使用 `18110`，容器内服务端口使用 `8000`。
+Python 版本对齐为 `3.11`。前端使用 Vue 3 + Vite。
 
-本地调试使用 `docker-compose.dev.yml`，通过 `bin/local-dev.sh` 统一启动和停止服务。该模式挂载 `backend/` 目录并启用 `uvicorn --reload`，日常启动不会构建项目镜像。
+本地调试使用 `docker-compose.dev.yml`，通过 `bin/local-dev.sh` 统一启动和停止服务。该模式挂载 `frontend/` 和 `backend/` 目录，前端使用 Vite dev server，后端启用 `uvicorn --reload`，日常启动不会构建项目镜像。
 
 ```bash
 bin/local-dev.sh start
@@ -67,8 +67,10 @@ bin/local-dev.sh start
 
 ```text
 http://localhost:18110
-http://localhost:18110/health
+http://localhost:18111/health
 ```
+
+本地前端使用根路径 `/` 运行；只有测试环境为了和同一台服务器上的其他项目共存，才通过 `/test-benchmark/` 路由访问。
 
 停止服务：
 
@@ -121,7 +123,7 @@ azureuser@20.2.81.240
 | --- | --- |
 | `DEPLOY_SSH_KEY` | 连接测试服务器的 SSH 私钥。 |
 
-测试环境容器使用宿主机端口 `18110`，公网通过 nginx 路由访问：
+测试环境前端容器使用宿主机端口 `18110`，后端 API 使用宿主机端口 `18111`。公网通过 nginx 路由访问：
 
 ```text
 http://20.2.81.240/test-benchmark/

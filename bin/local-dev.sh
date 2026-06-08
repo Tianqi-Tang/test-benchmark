@@ -6,7 +6,8 @@ PROJECT_NAME="${COMPOSE_PROJECT_NAME:-test-benchmark}"
 COMPOSE=(docker compose -p "$PROJECT_NAME" -f "$ROOT_DIR/docker-compose.dev.yml")
 READY_TIMEOUT_SECONDS="${DEV_READY_TIMEOUT:-120}"
 TEST_BENCHMARK_WEB_HOST_PORT="${TEST_BENCHMARK_WEB_HOST_PORT:-18110}"
-export TEST_BENCHMARK_WEB_HOST_PORT
+TEST_BENCHMARK_BACKEND_HOST_PORT="${TEST_BENCHMARK_BACKEND_HOST_PORT:-18111}"
+export TEST_BENCHMARK_WEB_HOST_PORT TEST_BENCHMARK_BACKEND_HOST_PORT
 
 usage() {
   cat <<EOF
@@ -22,17 +23,18 @@ Usage:
   bin/local-dev.sh clean       Remove containers, network, and dev volumes
 
 Local URLs:
-  Web:    http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}
-  Health: http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}/health
+  Web:     http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}
+  Backend: http://localhost:${TEST_BENCHMARK_BACKEND_HOST_PORT}/health
 
-Override the local host port with TEST_BENCHMARK_WEB_HOST_PORT.
+Override local host ports with TEST_BENCHMARK_WEB_HOST_PORT
+and TEST_BENCHMARK_BACKEND_HOST_PORT.
 EOF
 }
 
 all_core_services_running() {
   local running
   running="$("${COMPOSE[@]}" ps --services --filter status=running 2>/dev/null || true)"
-  for service in web; do
+  for service in backend frontend; do
     if ! grep -qx "$service" <<<"$running"; then
       return 1
     fi
@@ -46,8 +48,8 @@ start_services() {
   cat <<EOF
 
 Local dev stack is ready:
-  Web:    http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}
-  Health: http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}/health
+  Web:     http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}
+  Backend: http://localhost:${TEST_BENCHMARK_BACKEND_HOST_PORT}/health
 
 Use "bin/local-dev.sh logs" to watch logs.
 EOF
@@ -62,11 +64,12 @@ pull_services() {
 }
 
 wait_for_service() {
-  local url="http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}/health"
+  local backend_url="http://localhost:${TEST_BENCHMARK_BACKEND_HOST_PORT}/health"
+  local frontend_url="http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}/"
   local deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
-  until curl -fsS "$url" >/dev/null 2>&1; do
+  until curl -fsS "$backend_url" >/dev/null 2>&1 && curl -fsS "$frontend_url" >/dev/null 2>&1; do
     if (( SECONDS >= deadline )); then
-      echo "Timed out waiting for $url" >&2
+      echo "Timed out waiting for local dev services" >&2
       return 1
     fi
     sleep 2
