@@ -72,6 +72,13 @@ jobs:
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
             "cd '$DEPLOY_PATH' && docker compose up -d --build"
 
+      - name: Attach service to proxy network
+        run: |
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            "docker network inspect healthbot-proxy >/dev/null 2>&1 || docker network create healthbot-proxy"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            "docker network connect healthbot-proxy test-benchmark-web >/dev/null 2>&1 || true"
+
       - name: Verify deployment
         run: |
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
