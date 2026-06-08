@@ -220,6 +220,7 @@ const providerOptions: ProviderOption[] = [
 const modelPresetNames = new Set(providerOptions.flatMap((provider) => provider.modelOptions));
 
 let pollTimer: number | undefined;
+const appBasePath = import.meta.env.BASE_URL ?? '/';
 
 const hasActiveRuns = computed(() => runs.value.some((run) => run.status === 'pending' || run.status === 'running'));
 const runnableModels = computed(() => models.value.filter((model) => model.enabled && modelSupportsCapability(model, 'text')));
@@ -267,7 +268,7 @@ onUnmounted(() => {
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const isFormData = options?.body instanceof FormData;
-  const response = await fetch(url, {
+  const response = await fetch(apiUrl(url), {
     headers: { ...(isFormData ? {} : { 'Content-Type': 'application/json' }), ...(options?.headers ?? {}) },
     ...options,
   });
@@ -285,6 +286,12 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
     return undefined as T;
   }
   return response.json() as Promise<T>;
+}
+
+function apiUrl(url: string) {
+  if (!url.startsWith('/api')) return url;
+  const base = appBasePath.endsWith('/') ? appBasePath.slice(0, -1) : appBasePath;
+  return `${base}${url}`;
 }
 
 async function refreshAll() {
