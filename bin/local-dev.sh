@@ -7,7 +7,8 @@ COMPOSE=(docker compose -p "$PROJECT_NAME" -f "$ROOT_DIR/docker-compose.dev.yml"
 READY_TIMEOUT_SECONDS="${DEV_READY_TIMEOUT:-120}"
 TEST_BENCHMARK_WEB_HOST_PORT="${TEST_BENCHMARK_WEB_HOST_PORT:-18110}"
 TEST_BENCHMARK_BACKEND_HOST_PORT="${TEST_BENCHMARK_BACKEND_HOST_PORT:-18111}"
-export TEST_BENCHMARK_WEB_HOST_PORT TEST_BENCHMARK_BACKEND_HOST_PORT
+TEST_BENCHMARK_DB_HOST_PORT="${TEST_BENCHMARK_DB_HOST_PORT:-18112}"
+export TEST_BENCHMARK_WEB_HOST_PORT TEST_BENCHMARK_BACKEND_HOST_PORT TEST_BENCHMARK_DB_HOST_PORT
 
 usage() {
   cat <<EOF
@@ -25,16 +26,17 @@ Usage:
 Local URLs:
   Web:     http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}
   Backend: http://localhost:${TEST_BENCHMARK_BACKEND_HOST_PORT}/health
+  DB:      localhost:${TEST_BENCHMARK_DB_HOST_PORT}
 
 Override local host ports with TEST_BENCHMARK_WEB_HOST_PORT
-and TEST_BENCHMARK_BACKEND_HOST_PORT.
+TEST_BENCHMARK_BACKEND_HOST_PORT, and TEST_BENCHMARK_DB_HOST_PORT.
 EOF
 }
 
 all_core_services_running() {
   local running
   running="$("${COMPOSE[@]}" ps --services --filter status=running 2>/dev/null || true)"
-  for service in backend frontend; do
+  for service in postgres backend frontend; do
     if ! grep -qx "$service" <<<"$running"; then
       return 1
     fi
@@ -50,6 +52,7 @@ start_services() {
 Local dev stack is ready:
   Web:     http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}
   Backend: http://localhost:${TEST_BENCHMARK_BACKEND_HOST_PORT}/health
+  DB:      localhost:${TEST_BENCHMARK_DB_HOST_PORT}
 
 Use "bin/local-dev.sh logs" to watch logs.
 EOF

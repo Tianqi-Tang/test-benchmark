@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: test-benchmark-postgres
+    environment:
+      POSTGRES_DB: test_benchmark
+      POSTGRES_USER: test_benchmark
+      POSTGRES_PASSWORD: test_benchmark
+    ports:
+      - "${TEST_BENCHMARK_DB_HOST_PORT:-18112}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_benchmark -d test_benchmark"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   backend:
     build:
       context: .
@@ -6,9 +24,17 @@ services:
     image: test-benchmark-backend:local
     container_name: test-benchmark-backend
     environment:
+      DATABASE_URL: postgresql+psycopg://test_benchmark:test_benchmark@postgres:5432/test_benchmark
+      BENCHMARK_DATA_DIR: /data/benchmarks
       PORT: "8000"
     ports:
       - "${TEST_BENCHMARK_BACKEND_HOST_PORT:-18111}:8000"
+    volumes:
+      - ./data/benchmarks:/data/benchmarks:ro
+      - benchmark-storage:/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
@@ -22,3 +48,7 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  postgres-data:
+  benchmark-storage:

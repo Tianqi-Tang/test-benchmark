@@ -15,6 +15,7 @@ bin/local-dev.sh stop
 
 - Web: `http://localhost:18110/`
 - Backend health: `http://localhost:18111/health`
+- PostgreSQL: `localhost:18112`
 
 本地前端使用根路径 `/`。测试环境为了和同一台服务器上的其他项目共存，公网访问路径使用 `/test-benchmark/`。
 
@@ -43,6 +44,8 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+export DATABASE_URL=postgresql+psycopg://test_benchmark:test_benchmark@localhost:18112/test_benchmark
+export BENCHMARK_DATA_DIR=../data/benchmarks
 uvicorn app.main:app --reload --port 18111
 ```
 
@@ -65,7 +68,7 @@ pnpm build
 data/benchmarks/
 ```
 
-这些资料不提交仓库。第一版只导入：
+这些资料不提交仓库。题集可在网页中通过 JSONL 文件手动导入。当前已验证格式来自：
 
 ```text
 data/benchmarks/custom_medical_eval_sets/*.jsonl

@@ -98,4 +98,4 @@ jobs:
       - name: Verify deployment
         run: |
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            "curl -fsS http://localhost:18111/health && curl -fsS http://localhost:18110/"
+            "curl -fsS http://localhost:18111/health && curl -fsS http://localhost:18110/ && curl -fsS http://localhost/test-benchmark/api/health"

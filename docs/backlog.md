@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-项目已完成基础 Web 框架、Docker 本地开发脚本和 GitHub Actions 部署框架。下一阶段进入医疗模型评测平台第一版。
+项目已完成基础 Web 框架、Docker 本地开发脚本、GitHub Actions 部署框架和医疗模型评测平台第一版闭环。
 
 第一版目标详见：
 
@@ -10,14 +10,15 @@
 
 ## P0
 
-- [ ] PostgreSQL 接入本地和测试环境 Docker Compose。
-- [ ] 后端建立模型配置、题集、题目、评测运行、评测结果表。
-- [ ] 前端提供模型配置页面，支持 provider、model、baseUrl、apiKey、capability 配置。
-- [ ] 支持导入 `data/benchmarks/custom_medical_eval_sets/*.jsonl`。
-- [ ] 支持选择一个或多个模型，对一个题集发起评测。
-- [ ] 支持评测运行进度和结果明细页面，评测过程中前端可实时刷新。
-- [ ] 支持选择题直接评分。
-- [ ] 支持问答题结果保存和第一版可解释评分规则。
+- [x] PostgreSQL 接入本地和测试环境 Docker Compose。
+- [x] 后端建立模型配置、题集、题目、评测运行、评测结果表。
+- [x] 前端提供模型配置页面，支持 provider、model、baseUrl、apiKey、capability 配置。
+- [x] 支持导入 `data/benchmarks/custom_medical_eval_sets/*.jsonl`。
+- [x] 支持选择一个或多个模型，对一个题集发起评测。
+- [x] 支持评测运行进度和结果明细页面，评测过程中前端可实时刷新。
+- [x] 支持选择题直接评分。
+- [x] 支持问答题结果保存和第一版可解释评分规则。
+- [x] 支持模型连通性测试。
 
 ## P1
 
@@ -26,7 +27,6 @@
 - [ ] 支持导出评测结果 CSV 或 JSON。
 - [ ] 支持重新运行失败题目。
 - [ ] 支持评测运行取消。
-- [ ] 支持模型连通性测试。
 
 ## P2
 

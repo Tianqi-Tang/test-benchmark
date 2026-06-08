@@ -33,6 +33,7 @@ http://20.2.81.240/test-benchmark/
 5. 通过 SSH 部署到测试服务器。
 6. 将前后端容器接入 nginx 所在 Docker 网络。
 7. 校验后端 health 和前端页面可访问。
+8. 校验公网子路径 API：`/test-benchmark/api/health`。
 
 仓库 secret：
 
@@ -71,6 +72,8 @@ location /test-benchmark/ {
 
 - 后端通过 `DATABASE_URL` 连接。
 - 数据库数据持久化。
+- 默认 Compose 服务名为 `postgres`，容器名为 `test-benchmark-postgres`。
+- 宿主机调试端口默认为 `18112`。
 - API key 只存数据库并脱敏展示。
 - `storage/benchmark-assets/` 持久化，用于保存导入的图片资源。
 

@@ -1,6 +1,9 @@
 from fastapi.testclient import TestClient
+import pytest
 
-from app.main import app
+from app.database import _database_url
+from app.main import _capability_values, app
+from app.scoring import normalize_choice
 
 
 def test_health_endpoint():
@@ -21,3 +24,21 @@ def test_api_health_endpoint():
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert response.json()["service"] == "test-benchmark"
+
+
+def test_database_url_requires_postgresql(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///local.db")
+
+    with pytest.raises(RuntimeError, match="PostgreSQL"):
+        _database_url()
+
+
+def test_choice_answer_extraction():
+    assert normalize_choice("答案是 B。") == "B"
+    assert normalize_choice("b") == "B"
+    assert normalize_choice("选项：D") == "D"
+
+
+def test_capability_values_parse_multiple_capabilities():
+    assert _capability_values("text,vision") == {"text", "vision"}
+    assert _capability_values(" text , vision , ") == {"text", "vision"}
