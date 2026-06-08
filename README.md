@@ -43,7 +43,7 @@ data/benchmarks/
 
 ## 当前阶段
 
-当前先搭建项目框架和流水线，不实现具体评测功能。
+当前进入医疗模型评测平台 MVP 设计和实施阶段。第一版先支持模型配置、`custom_medical_eval_sets` 题集导入、文本模型评测运行和结果展示。
 
 已包含：
 
@@ -52,6 +52,13 @@ data/benchmarks/
 - `/health` 健康检查接口。
 - Docker / Docker Compose 本地运行配置。
 - GitHub Actions 测试、构建和测试环境部署流水线。
+
+后续技术实施以以下文档为准：
+
+- [协作指南](AGENTS.md)
+- [文档入口](docs/README.md)
+- [医疗模型评测平台 MVP](docs/requirements/evaluation-platform-mvp.md)
+- [开发说明](docs/development.md)
 
 ## 本地运行
 
