@@ -41,7 +41,8 @@ all_core_services_running() {
 }
 
 start_services() {
-  "${COMPOSE[@]}" up -d --wait --wait-timeout "$READY_TIMEOUT_SECONDS" --remove-orphans
+  "${COMPOSE[@]}" up -d --remove-orphans
+  wait_for_service
   cat <<EOF
 
 Local dev stack is ready:
@@ -58,6 +59,18 @@ stop_services() {
 
 pull_services() {
   "${COMPOSE[@]}" pull
+}
+
+wait_for_service() {
+  local url="http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}/health"
+  local deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
+  until curl -fsS "$url" >/dev/null 2>&1; do
+    if (( SECONDS >= deadline )); then
+      echo "Timed out waiting for $url" >&2
+      return 1
+    fi
+    sleep 2
+  done
 }
 
 case "${1:-toggle}" in
