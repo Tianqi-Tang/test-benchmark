@@ -1,0 +1,18 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: test-benchmark:local
+    container_name: test-benchmark-web
+    environment:
+      PORT: "8000"
+    ports:
+      - "${TEST_BENCHMARK_WEB_HOST_PORT:-18110}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
