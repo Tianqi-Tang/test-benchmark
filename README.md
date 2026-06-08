@@ -1,3 +1,42 @@
 # test-benchmark
 
-This is a repositry to generate LLM output based on dataset for futher evaluation 
+项目目标：评测以下医疗文本模型和多模态模型在医疗场景题集上的表现。
+
+## 候选模型
+
+### 通用文本模型
+
+| 模型 | 类型 | 备注 |
+| --- | --- | --- |
+| `AntAngelMed`（安诊儿） | 医疗文本模型 | 面向医疗问答、健康咨询等文本任务。 |
+| `DeepSeek-v4-pro` | 通用文本模型 | 面向医疗文本理解与生成任务。 |
+| `qwen3.7-plus` | 通用文本模型 | 面向医疗文本理解与生成任务。 |
+| `gpt-5.5` | 通用文本模型 | 面向医疗文本理解与生成任务。 |
+| `Gemini-3.5-flash` | 通用文本模型 | 面向医疗文本理解与生成任务。 |
+
+### 多模态模型
+
+| 模型 | 类型 | 备注 |
+| --- | --- | --- |
+| `qwen3.7-plus` | 多模态模型 | 面向医学图像、报告图片、OCR 与视觉问答任务。 |
+| `gpt-5.5` | 多模态模型 | 面向医学图像、报告图片、OCR 与视觉问答任务。 |
+| `Gemini-3.5-flash` | 多模态模型 | 面向医学图像、报告图片、OCR 与视觉问答任务。 |
+
+## 题集资料
+
+本地题集资料放在：
+
+```text
+data/benchmarks/
+```
+
+当前目录包括：
+
+| 目录 | 内容 |
+| --- | --- |
+| `data/benchmarks/MedBench_LLM/` | 文本医疗基准题集。 |
+| `data/benchmarks/MedBench_Agent/` | Agent 类医疗基准题集。 |
+| `data/benchmarks/MedBench_VLM/` | 多模态医疗基准题集及图片资源。 |
+| `data/benchmarks/custom_medical_eval_sets/` | 自定义或上传的医疗评测题集。 |
+
+题集、图片、模型权重、评测输出等本地资产不提交到代码仓库。
