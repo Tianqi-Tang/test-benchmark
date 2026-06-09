@@ -199,11 +199,17 @@ def _refresh_run_progress(db, run_id: int, commit: bool = True) -> None:
     scored_count = db.scalar(
         select(func.count(EvaluationResult.id)).where(
             EvaluationResult.evaluation_run_id == run_id,
-            EvaluationResult.is_correct.is_not(None),
+            EvaluationResult.score.is_not(None),
         )
     ) or 0
+    total_score = db.scalar(
+        select(func.coalesce(func.sum(EvaluationResult.score), 0.0)).where(
+            EvaluationResult.evaluation_run_id == run_id,
+            EvaluationResult.score.is_not(None),
+        )
+    ) or 0.0
     run.completed_count = int(completed_count)
     run.correct_count = int(correct_count)
-    run.accuracy = float(correct_count / scored_count) if scored_count else 0.0
+    run.accuracy = float(total_score / scored_count) if scored_count else 0.0
     if commit:
         db.commit()

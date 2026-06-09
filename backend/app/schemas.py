@@ -159,6 +159,7 @@ class EvaluationResultOut(BaseModel):
     modelConfigId: int
     modelName: Optional[str] = None
     benchmarkQuestionId: int
+    questionSourceRow: Optional[int] = None
     question: Optional[str] = None
     options: Optional[str] = None
     questionType: Optional[str] = None

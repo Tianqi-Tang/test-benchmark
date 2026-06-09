@@ -62,6 +62,16 @@ button:not(.p-button).secondary:hover {
   background: #eefaf7;
 }
 
+button:not(.p-button).warning {
+  border-color: #d08a1d;
+  background: #fff8e8;
+  color: var(--warning);
+}
+
+button:not(.p-button).warning:hover {
+  background: #ffe9b8;
+}
+
 button:not(.p-button).danger {
   border-color: var(--danger);
   background: var(--danger);

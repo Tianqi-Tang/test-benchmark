@@ -410,8 +410,9 @@ def list_evaluation_results(run_id: int, _: None = Depends(require_session), db:
     rows = db.scalars(
         select(EvaluationResult)
         .options(selectinload(EvaluationResult.model_config), selectinload(EvaluationResult.question))
+        .join(BenchmarkQuestion, BenchmarkQuestion.id == EvaluationResult.benchmark_question_id)
         .where(EvaluationResult.evaluation_run_id == run_id)
-        .order_by(EvaluationResult.id)
+        .order_by(BenchmarkQuestion.source_row, EvaluationResult.id)
     ).all()
     return [_result_out(row) for row in rows]
 
@@ -565,6 +566,7 @@ def _result_out(row: EvaluationResult) -> EvaluationResultOut:
         modelConfigId=row.model_config_id,
         modelName=model_config.name if model_config else None,
         benchmarkQuestionId=row.benchmark_question_id,
+        questionSourceRow=question.source_row if question else None,
         question=question.question if question else None,
         options=question.options if question else None,
         questionType=question.question_type if question else None,
@@ -615,9 +617,10 @@ def _model_score_out(db: Session, model_config: ModelConfig) -> ModelScoreOut:
             EvaluationResult.model_config_id == model_config.id,
         )
     ).all()
-    scored_count = sum(1 for row in results if row.is_correct is not None)
+    scored_count = sum(1 for row in results if row.score is not None)
     correct_count = sum(1 for row in results if row.is_correct is True)
-    accuracy = float(correct_count / scored_count) if scored_count else 0.0
+    total_score = sum(float(row.score) for row in results if row.score is not None)
+    accuracy = float(total_score / scored_count) if scored_count else 0.0
     latest_at = latest_run.finished_at or latest_run.started_at or latest_run.created_at
     return ModelScoreOut(
         modelConfigId=model_config.id,

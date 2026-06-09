@@ -74,6 +74,8 @@ type EvaluationResult = {
   evaluationRunId: number;
   modelConfigId: number;
   modelName: string | null;
+  benchmarkQuestionId: number;
+  questionSourceRow: number | null;
   question: string | null;
   options: string | null;
   questionType: string | null;
@@ -849,6 +851,21 @@ function confirmDeleteRun(run: EvaluationRun, event: Event) {
   });
 }
 
+function confirmStopRun(run: EvaluationRun, event: Event) {
+  confirm.require({
+    target: event.currentTarget as HTMLElement,
+    message: `确定结束评测 #${run.id} 吗？已经完成的结果会保留，未完成的题目将停止评测。`,
+    header: '结束评测',
+    icon: 'pi pi-exclamation-triangle',
+    rejectLabel: '取消',
+    acceptLabel: '结束评测',
+    acceptClass: 'p-button-warning',
+    accept: () => {
+      void stopRun(run.id);
+    },
+  });
+}
+
 async function deleteRun(run: EvaluationRun) {
   await withLoading(async () => {
     await api<void>(`/api/evaluation-runs/${run.id}`, { method: 'DELETE' });
@@ -1025,17 +1042,13 @@ async function withLoading(task: () => Promise<void>) {
   }
 }
 
-function formatPercent(value: number) {
-  return `${Math.round(value * 100)}%`;
+function formatScore(value: number) {
+  return (value * 100).toFixed(2);
 }
 
 function progressPercent(run: EvaluationRun) {
   if (run.totalCount === 0) return 0;
   return Math.round((run.completedCount / run.totalCount) * 100);
-}
-
-function accuracyPercent(run: EvaluationRun) {
-  return Math.round(run.accuracy * 100);
 }
 
 function resultsForRun(runId: number) {
@@ -1054,7 +1067,7 @@ function benchmarkSetNameById(setId: number | null) {
 function modelScoreStatus(score: ModelScore) {
   if (!score.latestRunId) return '未评测';
   if (!score.scoredCount) return '无可评分结果';
-  return formatPercent(score.accuracy);
+  return formatScore(score.accuracy);
 }
 
 function modelScoreProgressValue(score: ModelScore) {
@@ -1470,7 +1483,7 @@ function onTabChange(event: TabChangeEvent) {
             <th>模型</th>
             <th>评测状态</th>
             <th>进度</th>
-            <th>准确率</th>
+            <th>得分</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -1483,11 +1496,11 @@ function onTabChange(event: TabChangeEvent) {
               <span :class="statusBadgeClass(run.status)">{{ formatStatus(run.status) }}</span>
             </td>
             <td>{{ run.completedCount }} / {{ run.totalCount }}</td>
-            <td>{{ formatPercent(run.accuracy) }}</td>
+            <td>{{ formatScore(run.accuracy) }}</td>
             <td>
               <div class="row-actions">
                 <button type="button" class="secondary" @click="openRunDetails(run.id)">查看明细</button>
-                <button v-if="canStopRun(run)" type="button" class="danger" @click="stopRun(run.id)">结束</button>
+                <button v-if="canStopRun(run)" type="button" class="warning" @click="confirmStopRun(run, $event)">结束</button>
                 <button v-if="canDeleteRun(run)" type="button" class="danger" @click="confirmDeleteRun(run, $event)">删除</button>
               </div>
             </td>
@@ -1519,11 +1532,11 @@ function onTabChange(event: TabChangeEvent) {
         </div>
         <div>
           <span>当前最高分</span>
-          <strong>{{ bestModelScore ? `${bestModelScore.modelName} · ${formatPercent(bestModelScore.accuracy)}` : '-' }}</strong>
+          <strong>{{ bestModelScore ? `${bestModelScore.modelName} · ${formatScore(bestModelScore.accuracy)}` : '-' }}</strong>
         </div>
         <div>
-          <span>平均准确率</span>
-          <strong>{{ scoredModelScores.length ? formatPercent(averageModelAccuracy) : '-' }}</strong>
+          <span>平均得分</span>
+          <strong>{{ scoredModelScores.length ? formatScore(averageModelAccuracy) : '-' }}</strong>
         </div>
       </div>
 
@@ -1577,7 +1590,7 @@ function onTabChange(event: TabChangeEvent) {
             <div class="score-meta">
               <span>题集：{{ score.benchmarkSetName || '-' }}</span>
               <span>运行：{{ score.latestRunId ? `#${score.latestRunId}` : '-' }}</span>
-              <span>得分：{{ score.correctCount }} / {{ score.scoredCount || score.totalCount }}</span>
+              <span>正确 / 计分：{{ score.correctCount }} / {{ score.scoredCount || score.totalCount }}</span>
               <span>时间：{{ formatDateTime(score.latestEvaluatedAt) }}</span>
             </div>
           </template>
@@ -1646,8 +1659,8 @@ function onTabChange(event: TabChangeEvent) {
           </Card>
           <Card class="run-detail-metric">
             <template #content>
-              <span>准确率</span>
-              <strong>{{ formatPercent(detailRun.accuracy) }}</strong>
+              <span>得分</span>
+              <strong>{{ formatScore(detailRun.accuracy) }}</strong>
             </template>
           </Card>
           <Card class="run-detail-metric run-detail-metric-wide">
@@ -1671,9 +1684,10 @@ function onTabChange(event: TabChangeEvent) {
             <Button
               v-if="canStopRun(detailRun)"
               label="结束评测"
-              severity="danger"
+              severity="warn"
+              outlined
               :disabled="loading"
-              @click="stopRun(detailRun.id)"
+              @click="confirmStopRun(detailRun, $event)"
             />
           </div>
         </div>
@@ -1698,6 +1712,11 @@ function onTabChange(event: TabChangeEvent) {
           class="detail-data-table"
           size="small"
         >
+          <Column field="questionSourceRow" header="题号" style="min-width: 80px">
+            <template #body="{ data }">
+              #{{ data.questionSourceRow ?? data.benchmarkQuestionId ?? data.id }}
+            </template>
+          </Column>
           <Column field="modelName" header="模型" style="min-width: 150px">
             <template #body="{ data }">
               {{ data.modelName || data.modelConfigId }}
