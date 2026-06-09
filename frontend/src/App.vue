@@ -274,11 +274,14 @@ const providerOptions: ProviderOption[] = [
   },
   {
     value: 'qwen',
-    label: '阿里云千问（Qwen）',
-    shortLabel: '千问',
+    label: '阿里云百炼',
+    shortLabel: '阿里云',
     defaultModel: 'qwen3.7-plus',
     modelOptions: [
       'qwen3.7-plus',
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+      'glm-5.1',
       'qwen-max',
       'qwen-plus',
       'qwen-turbo',
