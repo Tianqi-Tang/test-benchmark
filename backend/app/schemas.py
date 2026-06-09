@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class LoginRequest(BaseModel):
@@ -25,6 +25,13 @@ class ModelConfigCreate(BaseModel):
     enabled: bool = True
     maxOutputTokens: int = Field(default=2048, ge=128, le=32768)
 
+    @field_validator("name", "provider", "model", mode="before")
+    @classmethod
+    def trim_required_string(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
 
 class ModelConfigUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
@@ -36,6 +43,13 @@ class ModelConfigUpdate(BaseModel):
     capability: Optional[str] = None
     enabled: Optional[bool] = None
     maxOutputTokens: Optional[int] = Field(default=None, ge=128, le=32768)
+
+    @field_validator("name", "provider", "model", mode="before")
+    @classmethod
+    def trim_required_string(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
 
 class ModelConfigOut(BaseModel):
@@ -76,6 +90,7 @@ class ModelScoreOut(BaseModel):
     benchmarkSetName: Optional[str]
     latestEvaluatedAt: Optional[datetime]
     totalCount: int
+    completedCount: int
     scoredCount: int
     correctCount: int
     accuracy: float
@@ -126,6 +141,7 @@ class EvaluationRunOut(BaseModel):
     id: int
     benchmarkSetId: int
     benchmarkSetName: Optional[str] = None
+    modelNames: List[str] = Field(default_factory=list)
     status: str
     totalCount: int
     completedCount: int

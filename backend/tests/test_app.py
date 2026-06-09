@@ -6,6 +6,7 @@ from app.evaluation_runner import PROGRESS_COMPLETED_STATUSES
 from app.main import _capability_values, _model_score_out, app
 from app.models import ModelConfig
 from app.scoring import normalize_choice
+from app.schemas import ModelConfigCreate, ModelConfigUpdate
 
 
 def test_health_endpoint():
@@ -73,6 +74,24 @@ def test_choice_answer_extraction():
 def test_capability_values_parse_multiple_capabilities():
     assert _capability_values("text,vision") == {"text", "vision"}
     assert _capability_values(" text , vision , ") == {"text", "vision"}
+
+
+def test_model_config_create_trims_required_strings():
+    payload = ModelConfigCreate(name=" DeepSeek ", provider=" deepseek ", model=" deepseek-v4-pro ")
+
+    assert payload.name == "DeepSeek"
+    assert payload.provider == "deepseek"
+    assert payload.model == "deepseek-v4-pro"
+
+
+def test_model_config_create_rejects_blank_name_after_trim():
+    with pytest.raises(ValueError):
+        ModelConfigCreate(name="   ", provider="deepseek", model="deepseek-v4-pro")
+
+
+def test_model_config_update_rejects_blank_name_after_trim():
+    with pytest.raises(ValueError):
+        ModelConfigUpdate(name="   ")
 
 
 def test_model_score_out_includes_unevaluated_model():

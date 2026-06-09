@@ -7,10 +7,20 @@ from .providers import call_provider, sanitize_error_message
 from .types import LlmCallResult
 
 
-def call_model(config: ModelConfig, prompt: str, max_output_tokens: int | None = None) -> LlmCallResult:
+def call_model(
+    config: ModelConfig,
+    prompt: str,
+    max_output_tokens: int | None = None,
+    max_attempts: int | None = None,
+) -> LlmCallResult:
     started = time.perf_counter()
     try:
-        text, raw = call_provider(config, prompt, max_output_tokens)
+        text, raw = call_provider(
+            config,
+            prompt,
+            max_output_tokens,
+            **({"max_attempts": max_attempts} if max_attempts is not None else {}),
+        )
         return LlmCallResult(
             ok=True,
             text=text,

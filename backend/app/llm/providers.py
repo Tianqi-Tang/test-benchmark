@@ -34,16 +34,22 @@ RETRYABLE_TRANSPORT_ERRORS = (
     httpx.RemoteProtocolError,
 )
 MAX_ATTEMPTS = 3
+REQUEST_TIMEOUT_SECONDS = 30.0
 SENSITIVE_QUERY_RE = re.compile(r"([?&](?:key|api_key|access_token)=)[^&\s'\"]+")
 BEARER_TOKEN_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+")
 
 
-def call_provider(config: ModelConfig, prompt: str, max_output_tokens: int | None) -> tuple[str, dict[str, Any]]:
+def call_provider(
+    config: ModelConfig,
+    prompt: str,
+    max_output_tokens: int | None,
+    max_attempts: int = MAX_ATTEMPTS,
+) -> tuple[str, dict[str, Any]]:
     if config.provider == "openai_responses":
-        return _call_openai_responses(config, prompt, max_output_tokens)
+        return _call_openai_responses(config, prompt, max_output_tokens, max_attempts)
     if config.provider == "gemini":
-        return _call_gemini(config, prompt, max_output_tokens)
-    return _call_openai_compatible(config, prompt, max_output_tokens)
+        return _call_gemini(config, prompt, max_output_tokens, max_attempts)
+    return _call_openai_compatible(config, prompt, max_output_tokens, max_attempts)
 
 
 def sanitize_error_message(message: str) -> str:
@@ -81,23 +87,29 @@ def _retry_delay(attempt: int) -> float:
     return 0.4 * (2**attempt)
 
 
-def _post_with_retry(client: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
-    for attempt in range(MAX_ATTEMPTS):
+def _post_with_retry(client: httpx.Client, url: str, max_attempts: int = MAX_ATTEMPTS, **kwargs: Any) -> httpx.Response:
+    max_attempts = max(1, max_attempts)
+    for attempt in range(max_attempts):
         try:
             response = client.post(url, **kwargs)
-            if response.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_ATTEMPTS - 1:
+            if response.status_code in RETRYABLE_STATUS_CODES and attempt < max_attempts - 1:
                 time.sleep(_retry_delay(attempt))
                 continue
             response.raise_for_status()
             return response
         except RETRYABLE_TRANSPORT_ERRORS:
-            if attempt >= MAX_ATTEMPTS - 1:
+            if attempt >= max_attempts - 1:
                 raise
             time.sleep(_retry_delay(attempt))
     raise RuntimeError("HTTP request failed after retries.")
 
 
-def _call_openai_compatible(config: ModelConfig, prompt: str, max_output_tokens: int | None) -> tuple[str, dict[str, Any]]:
+def _call_openai_compatible(
+    config: ModelConfig,
+    prompt: str,
+    max_output_tokens: int | None,
+    max_attempts: int,
+) -> tuple[str, dict[str, Any]]:
     base_url = _with_v1(_base_url(config))
     payload = {
         "model": _model_name(config),
@@ -105,14 +117,25 @@ def _call_openai_compatible(config: ModelConfig, prompt: str, max_output_tokens:
         "temperature": 0,
         "max_tokens": _max_output_tokens(config, max_output_tokens),
     }
-    with httpx.Client(timeout=90.0) as client:
-        response = _post_with_retry(client, f"{base_url}/chat/completions", headers=_headers(config), json=payload)
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = _post_with_retry(
+            client,
+            f"{base_url}/chat/completions",
+            max_attempts=max_attempts,
+            headers=_headers(config),
+            json=payload,
+        )
     raw = response.json()
     text = raw.get("choices", [{}])[0].get("message", {}).get("content") or ""
     return text.strip(), raw
 
 
-def _call_openai_responses(config: ModelConfig, prompt: str, max_output_tokens: int | None) -> tuple[str, dict[str, Any]]:
+def _call_openai_responses(
+    config: ModelConfig,
+    prompt: str,
+    max_output_tokens: int | None,
+    max_attempts: int,
+) -> tuple[str, dict[str, Any]]:
     base_url = _with_v1(_base_url(config))
     payload = {
         "model": _model_name(config),
@@ -120,8 +143,14 @@ def _call_openai_responses(config: ModelConfig, prompt: str, max_output_tokens: 
         "max_output_tokens": _max_output_tokens(config, max_output_tokens),
         "store": False,
     }
-    with httpx.Client(timeout=90.0) as client:
-        response = _post_with_retry(client, f"{base_url}/responses", headers=_headers(config), json=payload)
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = _post_with_retry(
+            client,
+            f"{base_url}/responses",
+            max_attempts=max_attempts,
+            headers=_headers(config),
+            json=payload,
+        )
     raw = response.json()
     return _extract_responses_text(raw), raw
 
@@ -143,7 +172,12 @@ def _extract_responses_text(raw: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
-def _call_gemini(config: ModelConfig, prompt: str, max_output_tokens: int | None) -> tuple[str, dict[str, Any]]:
+def _call_gemini(
+    config: ModelConfig,
+    prompt: str,
+    max_output_tokens: int | None,
+    max_attempts: int,
+) -> tuple[str, dict[str, Any]]:
     api_key = (config.api_key or "").strip()
     if not api_key:
         raise ValueError("API key is not configured.")
@@ -156,10 +190,11 @@ def _call_gemini(config: ModelConfig, prompt: str, max_output_tokens: int | None
         },
     }
     url = f"{base_url}/v1beta/models/{_model_name(config)}:generateContent"
-    with httpx.Client(timeout=90.0) as client:
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
         response = _post_with_retry(
             client,
             url,
+            max_attempts=max_attempts,
             params={"key": api_key},
             headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
             json=payload,

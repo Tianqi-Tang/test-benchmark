@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from .auth import AUTH_COOKIE_NAME, auth_configured, login, logout, require_session, session_is_active
 from .benchmark_importer import BenchmarkImportError, import_custom_medical_eval_sets, import_jsonl_lines
 from .database import get_db, init_db
-from .evaluation_runner import prepare_run_items, start_evaluation_run, stop_evaluation_run
+from .evaluation_runner import prepare_run_items, refresh_run_completion_status, run_result_once, start_evaluation_run, stop_evaluation_run
 from .llm import call_model
 from .models import BenchmarkQuestion, BenchmarkSet, EvaluationResult, EvaluationRun, ModelConfig
 from .schemas import (
@@ -145,7 +145,7 @@ def update_model(model_id: int, payload: ModelConfigUpdate, _: None = Depends(re
 @app.post("/api/models/{model_id}/test", response_model=ModelTestOut)
 def test_model(model_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> ModelTestOut:
     model_config = _get_model_or_404(db, model_id)
-    result = call_model(model_config, "Reply with exactly: OK", max_output_tokens=20)
+    result = call_model(model_config, "Reply with exactly: OK", max_output_tokens=20, max_attempts=1)
     model_config.last_test_status = "success" if result.ok else "failed"
     model_config.last_test_latency_ms = result.latency_ms
     model_config.last_test_error = None if result.ok else result.error or "Model call failed."
@@ -153,7 +153,8 @@ def test_model(model_id: int, _: None = Depends(require_session), db: Session = 
     db.commit()
     if not result.ok:
         return ModelTestOut(ok=False, message=result.error or "Model call failed.", latencyMs=result.latency_ms)
-    return ModelTestOut(ok=True, message="Model call succeeded.", latencyMs=result.latency_ms, responseText=result.text)
+    response_text = (result.text or "").strip() or None
+    return ModelTestOut(ok=True, message="Model call succeeded.", latencyMs=result.latency_ms, responseText=response_text)
 
 
 @app.get("/api/benchmark-sets", response_model=list[BenchmarkSetOut])
@@ -302,8 +303,8 @@ def delete_question(question_id: int, _: None = Depends(require_session), db: Se
     return {"ok": True}
 
 
-@app.post("/api/evaluation-runs", response_model=EvaluationRunOut)
-def create_evaluation_run(payload: EvaluationRunCreate, _: None = Depends(require_session), db: Session = Depends(get_db)) -> EvaluationRunOut:
+@app.post("/api/evaluation-runs", response_model=list[EvaluationRunOut])
+def create_evaluation_run(payload: EvaluationRunCreate, _: None = Depends(require_session), db: Session = Depends(get_db)) -> list[EvaluationRunOut]:
     benchmark_set = _get_benchmark_set_or_404(db, payload.benchmarkSetId)
     questions = db.scalars(
         select(BenchmarkQuestion)
@@ -321,25 +322,38 @@ def create_evaluation_run(payload: EvaluationRunCreate, _: None = Depends(requir
     if any(not _model_supports_capability(model_config, "text") for model_config in model_configs):
         raise HTTPException(status_code=400, detail="Current text benchmarks require models with text capability.")
 
-    run = EvaluationRun(
-        benchmark_set_id=benchmark_set.id,
-        status="pending",
-        total_count=len(model_configs) * len(questions),
-    )
-    db.add(run)
-    db.flush()
-    prepare_run_items(db, run, list(model_configs), list(questions))
+    runs: list[EvaluationRun] = []
+    for model_config in model_configs:
+        run = EvaluationRun(
+            benchmark_set_id=benchmark_set.id,
+            status="pending",
+            total_count=len(questions),
+        )
+        db.add(run)
+        db.flush()
+        prepare_run_items(db, run, [model_config], list(questions))
+        runs.append(run)
     db.commit()
-    db.refresh(run)
-    start_evaluation_run(run.id)
-    return _run_out(run, benchmark_set.name)
+    run_ids = [run.id for run in runs]
+    for run in runs:
+        start_evaluation_run(run.id)
+    created_runs = db.scalars(
+        select(EvaluationRun)
+        .options(selectinload(EvaluationRun.results).selectinload(EvaluationResult.model_config))
+        .where(EvaluationRun.id.in_(run_ids))
+        .order_by(EvaluationRun.id)
+    ).all()
+    return [_run_out(run, benchmark_set.name) for run in created_runs]
 
 
 @app.get("/api/evaluation-runs", response_model=list[EvaluationRunOut])
 def list_evaluation_runs(_: None = Depends(require_session), db: Session = Depends(get_db)) -> list[EvaluationRunOut]:
     rows = db.scalars(
         select(EvaluationRun)
-        .options(selectinload(EvaluationRun.benchmark_set))
+        .options(
+            selectinload(EvaluationRun.benchmark_set),
+            selectinload(EvaluationRun.results).selectinload(EvaluationResult.model_config),
+        )
         .order_by(EvaluationRun.created_at.desc())
         .limit(50)
     ).all()
@@ -350,7 +364,10 @@ def list_evaluation_runs(_: None = Depends(require_session), db: Session = Depen
 def get_evaluation_run(run_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> EvaluationRunOut:
     run = db.scalar(
         select(EvaluationRun)
-        .options(selectinload(EvaluationRun.benchmark_set))
+        .options(
+            selectinload(EvaluationRun.benchmark_set),
+            selectinload(EvaluationRun.results).selectinload(EvaluationResult.model_config),
+        )
         .where(EvaluationRun.id == run_id)
     )
     if run is None:
@@ -362,13 +379,28 @@ def get_evaluation_run(run_id: int, _: None = Depends(require_session), db: Sess
 def stop_run(run_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> EvaluationRunOut:
     run = db.scalar(
         select(EvaluationRun)
-        .options(selectinload(EvaluationRun.benchmark_set))
+        .options(
+            selectinload(EvaluationRun.benchmark_set),
+            selectinload(EvaluationRun.results).selectinload(EvaluationResult.model_config),
+        )
         .where(EvaluationRun.id == run_id)
     )
     if run is None:
         raise HTTPException(status_code=404, detail="Evaluation run not found.")
     stop_evaluation_run(db, run)
     return _run_out(run, run.benchmark_set.name if run.benchmark_set else None)
+
+
+@app.delete("/api/evaluation-runs/{run_id}")
+def delete_evaluation_run(run_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> dict[str, bool]:
+    run = db.get(EvaluationRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Evaluation run not found.")
+    if run.status in {"pending", "running"}:
+        raise HTTPException(status_code=409, detail="Cannot delete an active evaluation run.")
+    db.delete(run)
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/evaluation-runs/{run_id}/results", response_model=list[EvaluationResultOut])
@@ -382,6 +414,31 @@ def list_evaluation_results(run_id: int, _: None = Depends(require_session), db:
         .order_by(EvaluationResult.id)
     ).all()
     return [_result_out(row) for row in rows]
+
+
+@app.post("/api/evaluation-results/{result_id}/retry", response_model=EvaluationResultOut)
+def retry_evaluation_result(result_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> EvaluationResultOut:
+    result = db.scalar(
+        select(EvaluationResult)
+        .options(selectinload(EvaluationResult.model_config), selectinload(EvaluationResult.question))
+        .where(EvaluationResult.id == result_id)
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Evaluation result not found.")
+    run = db.get(EvaluationRun, result.evaluation_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Evaluation run not found.")
+    if result.status in {"pending", "running"}:
+        raise HTTPException(status_code=409, detail="Cannot retry a result that has not finished yet.")
+    retryable = result.status == "failed" or (
+        result.status == "completed" and result.model_answer is not None and not (result.extracted_answer or "").strip()
+    )
+    if not retryable:
+        raise HTTPException(status_code=400, detail="This result is not retryable.")
+    result = run_result_once(db, result)
+    refresh_run_completion_status(db, result.evaluation_run_id)
+    db.refresh(result)
+    return _result_out(result)
 
 
 @app.get("/api/dashboard/model-scores", response_model=list[ModelScoreOut])
@@ -475,10 +532,18 @@ def _question_out(row: BenchmarkQuestion) -> BenchmarkQuestionOut:
 
 
 def _run_out(row: EvaluationRun, benchmark_set_name: str | None = None) -> EvaluationRunOut:
+    model_names = sorted(
+        {
+            result.model_config.name
+            for result in row.results
+            if result.model_config is not None
+        }
+    )
     return EvaluationRunOut(
         id=row.id,
         benchmarkSetId=row.benchmark_set_id,
         benchmarkSetName=benchmark_set_name,
+        modelNames=model_names,
         status=row.status,
         totalCount=row.total_count,
         completedCount=row.completed_count,
@@ -538,6 +603,7 @@ def _model_score_out(db: Session, model_config: ModelConfig) -> ModelScoreOut:
             benchmarkSetName=None,
             latestEvaluatedAt=None,
             totalCount=0,
+            completedCount=0,
             scoredCount=0,
             correctCount=0,
             accuracy=0.0,
@@ -564,6 +630,7 @@ def _model_score_out(db: Session, model_config: ModelConfig) -> ModelScoreOut:
         benchmarkSetName=latest_run.benchmark_set.name if latest_run.benchmark_set else None,
         latestEvaluatedAt=latest_at,
         totalCount=len(results),
+        completedCount=latest_run.completed_count,
         scoredCount=scored_count,
         correctCount=correct_count,
         accuracy=accuracy,

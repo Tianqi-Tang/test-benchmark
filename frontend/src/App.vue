@@ -1,7 +1,23 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import Button from 'primevue/button';
+import Card from 'primevue/card';
+import Checkbox from 'primevue/checkbox';
+import Column from 'primevue/column';
 import ConfirmDialog from 'primevue/confirmdialog';
+import DataTable from 'primevue/datatable';
+import Dialog from 'primevue/dialog';
+import InputNumber from 'primevue/inputnumber';
+import InputText from 'primevue/inputtext';
+import Panel from 'primevue/panel';
+import Password from 'primevue/password';
+import ProgressBar from 'primevue/progressbar';
+import Select from 'primevue/select';
+import TabMenu from 'primevue/tabmenu';
+import Tag from 'primevue/tag';
+import Toast from 'primevue/toast';
 import { useConfirm } from 'primevue/useconfirm';
+import { useToast } from 'primevue/usetoast';
 
 type ModelConfig = {
   id: number;
@@ -41,6 +57,7 @@ type EvaluationRun = {
   id: number;
   benchmarkSetId: number;
   benchmarkSetName: string | null;
+  modelNames: string[];
   status: string;
   totalCount: number;
   completedCount: number;
@@ -54,6 +71,7 @@ type EvaluationRun = {
 
 type EvaluationResult = {
   id: number;
+  evaluationRunId: number;
   modelConfigId: number;
   modelName: string | null;
   question: string | null;
@@ -81,6 +99,7 @@ type ModelScore = {
   benchmarkSetName: string | null;
   latestEvaluatedAt: string | null;
   totalCount: number;
+  completedCount: number;
   scoredCount: number;
   correctCount: number;
   accuracy: number;
@@ -108,6 +127,16 @@ type CapabilityOption = {
   label: string;
 };
 
+type ModelTestState = {
+  status: 'success' | 'failed';
+  message: string | null;
+  latencyMs: number | null;
+};
+
+type TabChangeEvent = {
+  index: number;
+};
+
 const tabs = [
   { id: 'models', label: '模型配置' },
   { id: 'benchmarks', label: '题集管理' },
@@ -133,15 +162,37 @@ const benchmarkFileInput = ref<HTMLInputElement | null>(null);
 const modelDialogOpen = ref(false);
 const benchmarkSetDialogOpen = ref(false);
 const runDialogOpen = ref(false);
+const runCreateLoading = ref(false);
+const benchmarkSetFormElement = ref<HTMLFormElement | null>(null);
+const modelFormElement = ref<HTMLFormElement | null>(null);
 const detailRunId = ref<number | null>(null);
-const expandedResultId = ref<number | null>(null);
+const detailResultsLoading = ref(false);
+const detailResultsRequestId = ref(0);
+const expandedResultRows = ref<Record<number, boolean>>({});
+const retryingResultIds = ref<Set<number>>(new Set());
 const testingModelIds = ref<Set<number>>(new Set());
+const modelTestStates = ref<Record<number, ModelTestState>>({});
 const authChecked = ref(false);
 const authenticated = ref(false);
 const loading = ref(false);
 const notice = ref('');
 const error = ref('');
 const confirm = useConfirm();
+const toast = useToast();
+
+const tabMenuItems = computed(() => tabs.map((tab) => ({ label: tab.label })));
+const activeTabIndex = computed(() => {
+  const index = tabs.findIndex((tab) => tab.id === activeTab.value);
+  return index >= 0 ? index : 0;
+});
+const detailDialogOpen = computed({
+  get: () => detailRunId.value !== null,
+  set: (visible: boolean) => {
+    if (!visible) {
+      closeRunDetails();
+    }
+  },
+});
 
 const loginForm = reactive({
   password: '',
@@ -231,7 +282,7 @@ const providerOptions: ProviderOption[] = [
   {
     value: 'gemini',
     label: 'Google Gemini',
-    shortLabel: 'Gemini',
+    shortLabel: 'Google Gemini',
     defaultModel: 'gemini-3.5-flash',
     modelOptions: ['gemini-3.5-flash', 'gemini-3.5-pro', 'gemini-2.0-flash'],
     baseUrl: 'https://generativelanguage.googleapis.com',
@@ -404,11 +455,15 @@ function clearWorkspaceState() {
   runResults.value = {};
   selectedBenchmarkSetId.value = null;
   selectedModelIds.value = [];
+  modelTestStates.value = {};
   detailRunId.value = null;
-  expandedResultId.value = null;
+  detailResultsLoading.value = false;
+  expandedResultRows.value = {};
+  retryingResultIds.value = new Set();
   modelDialogOpen.value = false;
   benchmarkSetDialogOpen.value = false;
   runDialogOpen.value = false;
+  runCreateLoading.value = false;
 }
 
 async function refreshAll() {
@@ -482,6 +537,7 @@ function applyModelPreset() {
 
 function openCreateModelDialog() {
   resetModelForm();
+  applyProviderPreset();
   modelDialogOpen.value = true;
 }
 
@@ -490,27 +546,36 @@ function closeModelDialog() {
   resetModelForm();
 }
 
-function toggleCapability(capability: Capability, event: Event) {
-  const checked = (event.target as HTMLInputElement).checked;
-  if (checked && !modelForm.capabilities.includes(capability)) {
-    modelForm.capabilities = [...modelForm.capabilities, capability];
-  } else if (!checked) {
-    modelForm.capabilities = modelForm.capabilities.filter((value) => value !== capability);
-  }
-}
-
 async function saveModel() {
+  const name = modelForm.name.trim();
+  const provider = normalizeProviderValue(modelForm.provider).trim();
+  const model = modelForm.model.trim();
+  const baseUrl = modelForm.baseUrl.trim();
+  const apiKey = modelForm.apiKey.trim();
+
+  if (!name) {
+    error.value = '请填写模型名称';
+    return;
+  }
+  if (!provider) {
+    error.value = '请选择模型服务商';
+    return;
+  }
+  if (!model) {
+    error.value = '请选择模型';
+    return;
+  }
   if (!modelForm.capabilities.length) {
     error.value = '请至少选择一种模型能力';
     return;
   }
   await withLoading(async () => {
     const payload = {
-      name: modelForm.name,
-      provider: normalizeProviderValue(modelForm.provider),
-      model: modelForm.model,
-      baseUrl: modelForm.baseUrl || null,
-      apiKey: modelForm.apiKey || undefined,
+      name,
+      provider,
+      model,
+      baseUrl: baseUrl || null,
+      apiKey: apiKey || undefined,
       clearApiKey: modelForm.clearApiKey,
       capability: serializeCapabilities(modelForm.capabilities),
       enabled: modelForm.enabled,
@@ -527,7 +592,7 @@ async function saveModel() {
         method: 'POST',
         body: JSON.stringify({
           ...payload,
-          apiKey: modelForm.apiKey || null,
+          apiKey: apiKey || null,
           clearApiKey: undefined,
         }),
       });
@@ -574,16 +639,34 @@ function resetModelForm() {
 async function testModel(modelId: number) {
   if (testingModelIds.value.has(modelId)) return;
   testingModelIds.value = new Set([...testingModelIds.value, modelId]);
-  error.value = '';
-  notice.value = '';
+  const startedAt = performance.now();
+  const modelName = modelNameById(modelId);
   try {
     const result = await api<{ ok: boolean; message: string; responseText?: string }>(`/api/models/${modelId}/test`, {
       method: 'POST',
     });
-    notice.value = result.ok ? `连接成功：${result.responseText ?? result.message}` : result.message;
+    if (result.ok) {
+      const message = result.responseText?.trim() || '调用成功';
+      modelTestStates.value = {
+        ...modelTestStates.value,
+        [modelId]: { status: 'success', message, latencyMs: Math.round(performance.now() - startedAt) },
+      };
+      toast.add({ severity: 'success', summary: '模型测试成功', detail: `${modelName}：${message}`, life: 4000 });
+    } else {
+      modelTestStates.value = {
+        ...modelTestStates.value,
+        [modelId]: { status: 'failed', message: result.message, latencyMs: Math.round(performance.now() - startedAt) },
+      };
+      toast.add({ severity: 'error', summary: '模型测试失败', detail: `${modelName}：${result.message}`, life: 7000 });
+    }
     await loadModels();
   } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err);
+    const message = err instanceof Error ? err.message : String(err);
+    modelTestStates.value = {
+      ...modelTestStates.value,
+      [modelId]: { status: 'failed', message, latencyMs: Math.round(performance.now() - startedAt) },
+    };
+    toast.add({ severity: 'error', summary: '模型测试失败', detail: `${modelName}：${message}`, life: 7000 });
     await loadModels();
   } finally {
     const next = new Set(testingModelIds.value);
@@ -687,7 +770,7 @@ async function deleteBenchmarkSet(set: BenchmarkSet) {
       questions.value = [];
     }
     detailRunId.value = null;
-    expandedResultId.value = null;
+    expandedResultRows.value = {};
     await Promise.all([loadBenchmarkSets(), loadRuns(), loadModelScores()]);
   });
 }
@@ -735,80 +818,151 @@ async function deleteQuestion(questionId: number) {
   });
 }
 
-function toggleModelSelection(modelId: number, checked: boolean) {
-  if (checked && !selectedModelIds.value.includes(modelId)) {
-    selectedModelIds.value = [...selectedModelIds.value, modelId];
-  } else if (!checked) {
-    selectedModelIds.value = selectedModelIds.value.filter((id) => id !== modelId);
-  }
-}
-
-function onModelSelectionChange(modelId: number, event: Event) {
-  toggleModelSelection(modelId, (event.target as HTMLInputElement).checked);
-}
-
 function openRunDialog() {
-  if (!selectedBenchmarkSetId.value) {
-    error.value = '请先选择题集';
-    return;
-  }
   if (!runnableModels.value.length) {
     error.value = '请先配置至少一个支持文本能力的已启用模型';
     return;
   }
-  const runnableIds = new Set(runnableModels.value.map((model) => model.id));
-  selectedModelIds.value = selectedModelIds.value.filter((id) => runnableIds.has(id));
-  if (!selectedModelIds.value.length) {
-    selectedModelIds.value = runnableModels.value.map((model) => model.id);
-  }
+  selectedModelIds.value = [];
   error.value = '';
   notice.value = '';
   runDialogOpen.value = true;
 }
 
 function closeRunDialog() {
+  if (runCreateLoading.value) return;
   runDialogOpen.value = false;
 }
 
+function confirmDeleteRun(run: EvaluationRun, event: Event) {
+  confirm.require({
+    target: event.currentTarget as HTMLElement,
+    message: `确定删除评测 #${run.id} 吗？该评测的逐题结果也会一起删除。`,
+    header: '删除评测',
+    icon: 'pi pi-exclamation-triangle',
+    rejectLabel: '取消',
+    acceptLabel: '删除',
+    acceptClass: 'p-button-danger',
+    accept: () => {
+      void deleteRun(run);
+    },
+  });
+}
+
+async function deleteRun(run: EvaluationRun) {
+  await withLoading(async () => {
+    await api<void>(`/api/evaluation-runs/${run.id}`, { method: 'DELETE' });
+    toast.add({
+      severity: 'success',
+      summary: '评测已删除',
+      detail: `#${run.id} · ${run.benchmarkSetName || benchmarkSetNameById(run.benchmarkSetId)}`,
+      life: 5000,
+    });
+    if (detailRunId.value === run.id) {
+      closeRunDetails();
+    }
+    await Promise.all([loadRuns(), loadModelScores()]);
+  });
+}
+
 async function createRun() {
-  if (!selectedModelIds.value.length) {
-    error.value = '请至少选择一个模型';
+  if (!selectedBenchmarkSetId.value) {
+    toast.add({ severity: 'warn', summary: '请选择题集', detail: '启动评测前需要先选择一个题集。', life: 4000 });
     return;
   }
-  await withLoading(async () => {
-    const run = await api<EvaluationRun>('/api/evaluation-runs', {
+  if (!selectedModelIds.value.length) {
+    toast.add({ severity: 'warn', summary: '请选择模型', detail: '启动评测前需要至少选择一个模型。', life: 4000 });
+    return;
+  }
+  runCreateLoading.value = true;
+  error.value = '';
+  notice.value = '';
+  const benchmarkName = benchmarkSetNameById(selectedBenchmarkSetId.value);
+  const selectedModelNames = selectedModelIds.value.map(modelNameById).join('、');
+  try {
+    const createdRuns = await api<EvaluationRun[]>('/api/evaluation-runs', {
       method: 'POST',
       body: JSON.stringify({
         benchmarkSetId: selectedBenchmarkSetId.value,
         modelConfigIds: selectedModelIds.value,
       }),
     });
-    detailRunId.value = run.id;
+    const firstRun = createdRuns[0];
+    if (!firstRun) {
+      throw new Error('评测任务创建失败');
+    }
+    const requestId = detailResultsRequestId.value + 1;
+    detailResultsRequestId.value = requestId;
+    detailRunId.value = firstRun.id;
+    detailResultsLoading.value = true;
+    expandedResultRows.value = {};
     activeTab.value = 'runs';
     runDialogOpen.value = false;
-    notice.value = `评测已启动：#${run.id}`;
+    toast.add({
+      severity: 'success',
+      summary: '评测已启动',
+      detail: `${createdRuns.map((run) => `#${run.id}`).join('、')} · ${benchmarkName} · ${selectedModelNames}`,
+      life: 5000,
+    });
     await loadRuns();
-    await Promise.all([loadRunResults(run.id), loadModelScores()]);
-  });
+    window.setTimeout(() => {
+      void loadRunDetailsInBackground(firstRun.id, requestId);
+    }, 0);
+    void loadModelScores();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    toast.add({ severity: 'error', summary: '启动评测失败', detail: `${benchmarkName}：${message}`, life: 7000 });
+    if (detailRunId.value === null) {
+      runDialogOpen.value = true;
+    }
+  } finally {
+    runCreateLoading.value = false;
+  }
 }
 
-async function openRunDetails(runId: number) {
+function openRunDetails(runId: number) {
+  const requestId = detailResultsRequestId.value + 1;
+  detailResultsRequestId.value = requestId;
   detailRunId.value = runId;
-  expandedResultId.value = null;
-  await withLoading(async () => {
+  expandedResultRows.value = {};
+  detailResultsLoading.value = true;
+  error.value = '';
+  window.setTimeout(() => {
+    void loadRunDetailsInBackground(runId, requestId);
+  }, 0);
+}
+
+async function loadRunDetailsInBackground(runId: number, requestId: number) {
+  try {
     await loadRunResults(runId);
-  });
+  } catch (err) {
+    if (detailResultsRequestId.value === requestId && detailRunId.value === runId) {
+      error.value = err instanceof Error ? err.message : String(err);
+    }
+  } finally {
+    if (detailResultsRequestId.value === requestId && detailRunId.value === runId) {
+      detailResultsLoading.value = false;
+    }
+  }
 }
 
 function closeRunDetails() {
+  detailResultsRequestId.value += 1;
   detailRunId.value = null;
-  expandedResultId.value = null;
+  detailResultsLoading.value = false;
+  expandedResultRows.value = {};
+  retryingResultIds.value = new Set();
 }
 
 async function stopRun(runId: number) {
   await withLoading(async () => {
     const run = await api<EvaluationRun>(`/api/evaluation-runs/${runId}/stop`, { method: 'POST' });
-    notice.value = `评测已结束：#${run.id}`;
+    toast.add({
+      severity: 'success',
+      summary: '评测已结束',
+      detail: `#${run.id} · ${run.benchmarkSetName || benchmarkSetNameById(run.benchmarkSetId)}`,
+      life: 5000,
+    });
     await loadRuns();
     await loadModelScores();
     if (detailRunId.value === run.id) {
@@ -818,7 +972,44 @@ async function stopRun(runId: number) {
 }
 
 function toggleResultRecord(resultId: number) {
-  expandedResultId.value = expandedResultId.value === resultId ? null : resultId;
+  expandedResultRows.value = expandedResultRows.value[resultId] ? {} : { [resultId]: true };
+}
+
+function canRetryResult(result: EvaluationResult) {
+  if (retryingResultIds.value.has(result.id)) return false;
+  if (result.status === 'failed') return true;
+  return result.status === 'completed' && result.modelAnswer !== null && !(result.extractedAnswer ?? '').trim();
+}
+
+function isRetryingResult(resultId: number) {
+  return retryingResultIds.value.has(resultId);
+}
+
+async function retryResult(result: EvaluationResult) {
+  if (!canRetryResult(result)) return;
+  retryingResultIds.value = new Set([...retryingResultIds.value, result.id]);
+  try {
+    const updated = await api<EvaluationResult>(`/api/evaluation-results/${result.id}/retry`, { method: 'POST' });
+    const rows = runResults.value[updated.evaluationRunId] ?? [];
+    runResults.value = {
+      ...runResults.value,
+      [updated.evaluationRunId]: rows.map((row) => (row.id === updated.id ? updated : row)),
+    };
+    toast.add({
+      severity: updated.status === 'failed' ? 'error' : 'success',
+      summary: updated.status === 'failed' ? '重试失败' : '重试完成',
+      detail: `${updated.modelName || `模型 #${updated.modelConfigId}`} · 结果 #${updated.id}`,
+      life: 5000,
+    });
+    await Promise.all([loadRuns(), loadModelScores()]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    toast.add({ severity: 'error', summary: '重试失败', detail: message, life: 7000 });
+  } finally {
+    const next = new Set(retryingResultIds.value);
+    next.delete(result.id);
+    retryingResultIds.value = next;
+  }
 }
 
 async function withLoading(task: () => Promise<void>) {
@@ -851,14 +1042,40 @@ function resultsForRun(runId: number) {
   return runResults.value[runId] ?? [];
 }
 
-function modelScoreBarWidth(score: ModelScore) {
-  return `${Math.max(3, Math.round(score.accuracy * 100))}%`;
+function modelNameById(modelId: number) {
+  return models.value.find((model) => model.id === modelId)?.name ?? `模型 #${modelId}`;
+}
+
+function benchmarkSetNameById(setId: number | null) {
+  if (!setId) return '未选择题集';
+  return benchmarkSets.value.find((set) => set.id === setId)?.name ?? `题集 #${setId}`;
 }
 
 function modelScoreStatus(score: ModelScore) {
   if (!score.latestRunId) return '未评测';
   if (!score.scoredCount) return '无可评分结果';
   return formatPercent(score.accuracy);
+}
+
+function modelScoreProgressValue(score: ModelScore) {
+  if (!score.totalCount) return 0;
+  return Math.round((score.completedCount / score.totalCount) * 100);
+}
+
+function modelScoreTagSeverity(score: ModelScore) {
+  if (!score.latestRunId) return 'secondary';
+  if (score.latestRunStatus === 'failed') return 'danger';
+  if (score.latestRunStatus === 'running' || score.latestRunStatus === 'pending') return 'info';
+  if (score.latestRunStatus === 'stopped') return 'warn';
+  return score.scoredCount ? 'success' : 'secondary';
+}
+
+function runStatusTagSeverity(status: string) {
+  if (status === 'failed') return 'danger';
+  if (status === 'running' || status === 'pending') return 'info';
+  if (status === 'stopped') return 'warn';
+  if (status === 'completed') return 'success';
+  return 'secondary';
 }
 
 function formatStatus(value: string) {
@@ -892,14 +1109,30 @@ function formatDateTime(value: string | null) {
 }
 
 function formatModelTestStatus(model: ModelConfig) {
-  if (!model.lastTestStatus) return '未测试';
-  return model.lastTestStatus === 'success' ? '通过' : '失败';
+  if (isModelTesting(model.id)) return '测试中';
+  const state = modelTestStates.value[model.id];
+  const status = state?.status ?? model.lastTestStatus;
+  if (!status) return '未测试';
+  return status === 'success' ? '通过' : '失败';
 }
 
 function modelTestStatusClass(model: ModelConfig) {
-  if (model.lastTestStatus === 'success') return 'ok';
-  if (model.lastTestStatus === 'failed') return 'bad';
+  if (isModelTesting(model.id)) return 'muted';
+  const state = modelTestStates.value[model.id];
+  const status = state?.status ?? model.lastTestStatus;
+  if (status === 'success') return 'ok';
+  if (status === 'failed') return 'bad';
   return 'muted';
+}
+
+function modelTestLatency(model: ModelConfig) {
+  return modelTestStates.value[model.id]?.latencyMs ?? model.lastTestLatencyMs;
+}
+
+function modelTestError(model: ModelConfig) {
+  const state = modelTestStates.value[model.id];
+  if (state?.status === 'failed') return state.message;
+  return model.lastTestError;
 }
 
 function isModelTesting(modelId: number) {
@@ -908,6 +1141,10 @@ function isModelTesting(modelId: number) {
 
 function canStopRun(run: EvaluationRun) {
   return run.status === 'pending' || run.status === 'running';
+}
+
+function canDeleteRun(run: EvaluationRun) {
+  return ['completed', 'failed', 'stopped'].includes(run.status);
 }
 
 function normalizeProviderValue(provider: string) {
@@ -951,6 +1188,14 @@ function capabilityLabels(capability: string) {
   return capabilityValues(capability).map(capabilityLabel);
 }
 
+function questionTypeLabel(questionType: string | null) {
+  const labels: Record<string, string> = {
+    qa: '问答题',
+    choice: '选择题',
+  };
+  return questionType ? labels[questionType] ?? questionType : '-';
+}
+
 function serializeCapabilities(capabilities: Capability[]) {
   return capabilityOptions
     .map((option) => option.value)
@@ -974,39 +1219,45 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
   }
   return providerOption(provider)?.defaultCapabilities ?? ['text'];
 }
+
+function onTabChange(event: TabChangeEvent) {
+  const tab = tabs[event.index];
+  if (tab) {
+    activeTab.value = tab.id;
+  }
+}
 </script>
 
 <template>
   <ConfirmDialog />
+  <Toast position="top-right" />
   <main class="app-shell">
     <header class="topbar">
       <div class="brand-block">
         <h1>test-benchmark</h1>
         <p>医疗模型评测工作台</p>
       </div>
-      <nav v-if="authenticated" class="tabs topbar-tabs" aria-label="primary">
-        <button
-          v-for="tab in tabs"
-          :key="tab.id"
-          type="button"
-          :class="{ active: activeTab === tab.id }"
-          @click="activeTab = tab.id"
-        >
-          {{ tab.label }}
-        </button>
-      </nav>
+      <TabMenu
+        v-if="authenticated"
+        :model="tabMenuItems"
+        :active-index="activeTabIndex"
+        class="topbar-tabs"
+        aria-label="primary"
+        @tab-change="onTabChange"
+      />
       <div class="topbar-actions">
-        <button
+        <Button
           v-if="authenticated"
-          type="button"
-          class="icon-button"
+          icon="pi pi-sign-out"
+          text
+          rounded
+          severity="secondary"
+          class="logout-button"
           :disabled="loading"
           title="退出登录"
           aria-label="退出登录"
           @click="confirmLogout"
-        >
-          <i class="pi pi-sign-out" aria-hidden="true"></i>
-        </button>
+        />
       </div>
     </header>
 
@@ -1019,17 +1270,15 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
         <p>请输入服务端配置的访问密码。</p>
         <label>
           访问密码
-          <input
+          <Password
             v-model="loginForm.password"
-            type="password"
             autocomplete="current-password"
+            :feedback="false"
+            fluid
             required
-            autofocus
           />
         </label>
-        <button type="submit" :disabled="loading || !loginForm.password">
-          {{ loading ? '登录中' : '登录' }}
-        </button>
+        <Button type="submit" :label="loading ? '登录中' : '登录'" :disabled="loading || !loginForm.password" />
       </form>
     </section>
 
@@ -1081,8 +1330,10 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
             <td>{{ model.enabled ? '启用' : '停用' }}</td>
             <td>
               <span class="tag" :class="modelTestStatusClass(model)">{{ formatModelTestStatus(model) }}</span>
-              <small v-if="model.lastTestLatencyMs" class="cell-subtle">{{ model.lastTestLatencyMs }}ms</small>
-              <small v-if="model.lastTestError" class="cell-error">{{ model.lastTestError }}</small>
+              <small v-if="modelTestLatency(model)" class="cell-subtle">{{ modelTestLatency(model) }}ms</small>
+              <small v-if="modelTestError(model)" class="cell-error" :title="modelTestError(model) ?? ''">
+                {{ modelTestError(model) }}
+              </small>
             </td>
             <td>{{ formatDateTime(model.lastTestedAt) }}</td>
             <td>
@@ -1161,7 +1412,7 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
           </button>
         </div>
         <article v-for="question in questions" :key="question.id" class="question-row">
-          <div class="question-meta">#{{ question.sourceRow }} · {{ question.questionType }}</div>
+          <div class="question-meta">#{{ question.sourceRow }} · {{ questionTypeLabel(question.questionType) }}</div>
           <template v-if="editingQuestionId === question.id">
             <div class="question-edit-grid">
               <label>
@@ -1206,21 +1457,7 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
       <div class="section-head">
         <div>
           <h2>评测运行</h2>
-          <p>选择一个题集和一个或多个已启用模型后发起评测。</p>
-        </div>
-      </div>
-
-      <div class="run-panel">
-        <label>
-          题集
-          <select v-model.number="selectedBenchmarkSetId">
-            <option v-for="set in benchmarkSets" :key="set.id" :value="set.id">
-              {{ set.name }} · {{ set.questionCount }} 题
-            </option>
-          </select>
-        </label>
-        <div class="run-summary">
-          可选模型：{{ runnableModels.length }} 个
+          <p>通过启动评测选择题集和模型，运行后可查看明细。</p>
         </div>
         <button type="button" :disabled="loading" @click="openRunDialog">启动评测</button>
       </div>
@@ -1230,6 +1467,7 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
           <tr>
             <th>ID</th>
             <th>题集</th>
+            <th>模型</th>
             <th>评测状态</th>
             <th>进度</th>
             <th>准确率</th>
@@ -1240,6 +1478,7 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
           <tr v-for="run in runs" :key="run.id">
             <td>#{{ run.id }}</td>
             <td>{{ run.benchmarkSetName || run.benchmarkSetId }}</td>
+            <td>{{ run.modelNames.length ? run.modelNames.join('、') : '-' }}</td>
             <td>
               <span :class="statusBadgeClass(run.status)">{{ formatStatus(run.status) }}</span>
             </td>
@@ -1249,11 +1488,12 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
               <div class="row-actions">
                 <button type="button" class="secondary" @click="openRunDetails(run.id)">查看明细</button>
                 <button v-if="canStopRun(run)" type="button" class="danger" @click="stopRun(run.id)">结束</button>
+                <button v-if="canDeleteRun(run)" type="button" class="danger" @click="confirmDeleteRun(run, $event)">删除</button>
               </div>
             </td>
           </tr>
           <tr v-if="!runs.length">
-            <td colspan="6" class="empty">暂无评测运行</td>
+            <td colspan="7" class="empty">暂无评测运行</td>
           </tr>
         </tbody>
       </table>
@@ -1288,300 +1528,418 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
       </div>
 
       <div class="score-board">
-        <article
+        <Card
           v-for="score in sortedModelScores"
           :key="score.modelConfigId"
-          class="score-row"
+          class="score-card"
           :class="{ 'score-row-empty': !score.latestRunId || !score.scoredCount }"
         >
-          <div class="score-main">
-            <div>
-              <h3>{{ score.modelName }}</h3>
-              <p>{{ providerLabel(score.provider) }} · {{ score.model }}</p>
+          <template #content>
+            <div class="score-card-head">
+              <div class="score-title">
+                <h3>{{ score.modelName }}</h3>
+                <p>{{ providerLabel(score.provider) }}</p>
+              </div>
+              <Tag
+                class="score-state-tag"
+                :severity="modelScoreTagSeverity(score)"
+                :value="`评测状态：${formatOptionalStatus(score.latestRunStatus)}`"
+              />
             </div>
-            <div class="score-result">
-              <span :class="['score-status-pill', `score-status-pill-${score.latestRunStatus || 'pending'}`]">
-                <span>评测状态</span>
-                <strong>{{ formatOptionalStatus(score.latestRunStatus) }}</strong>
-              </span>
-              <strong>{{ modelScoreStatus(score) }}</strong>
-              <button
-                type="button"
-                class="secondary compact"
+
+            <div class="score-card-body">
+              <div class="score-value">
+                <span>最近得分</span>
+                <strong>{{ modelScoreStatus(score) }}</strong>
+              </div>
+              <Button
+                label="明细"
+                size="small"
+                severity="secondary"
+                outlined
                 :disabled="!score.latestRunId || loading"
                 @click="score.latestRunId && openRunDetails(score.latestRunId)"
-              >
-                明细
-              </button>
+              />
             </div>
-          </div>
-          <div class="score-bar" aria-hidden="true">
-            <span :style="{ width: score.scoredCount ? modelScoreBarWidth(score) : '0%' }"></span>
-          </div>
-          <div class="score-meta">
-            <span>题集：{{ score.benchmarkSetName || '-' }}</span>
-            <span>运行：{{ score.latestRunId ? `#${score.latestRunId}` : '-' }}</span>
-            <span>得分：{{ score.correctCount }} / {{ score.scoredCount || score.totalCount }}</span>
-            <span>时间：{{ formatDateTime(score.latestEvaluatedAt) }}</span>
-          </div>
-        </article>
+
+            <div class="score-progress-block">
+              <div>
+                <span>完成进度</span>
+                <strong>{{ score.completedCount }} / {{ score.totalCount }}</strong>
+              </div>
+              <ProgressBar
+                class="score-progress"
+                :value="modelScoreProgressValue(score)"
+                :show-value="false"
+              />
+            </div>
+
+            <div class="score-meta">
+              <span>题集：{{ score.benchmarkSetName || '-' }}</span>
+              <span>运行：{{ score.latestRunId ? `#${score.latestRunId}` : '-' }}</span>
+              <span>得分：{{ score.correctCount }} / {{ score.scoredCount || score.totalCount }}</span>
+              <span>时间：{{ formatDateTime(score.latestEvaluatedAt) }}</span>
+            </div>
+          </template>
+        </Card>
         <div v-if="!modelScores.length" class="empty dashboard-empty">
           暂无模型配置
         </div>
       </div>
     </section>
 
-    <div v-if="benchmarkSetDialogOpen" class="modal-backdrop" role="presentation" @click.self="closeBenchmarkSetDialog">
-      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="benchmark-set-dialog-title">
-        <div class="modal-head">
-          <div>
-            <h2 id="benchmark-set-dialog-title">编辑题集名称</h2>
-            <p>类型和模态由导入文件判断，不在页面手动修改。</p>
-          </div>
-          <button type="button" class="secondary" @click="closeBenchmarkSetDialog">关闭</button>
+    <Dialog
+      :visible="benchmarkSetDialogOpen"
+      modal
+      header="编辑题集名称"
+      class="app-dialog"
+      :style="{ width: 'min(640px, calc(100vw - 32px))' }"
+      @update:visible="(visible) => { if (!visible) closeBenchmarkSetDialog(); }"
+    >
+      <p class="dialog-description">类型和模态由导入文件判断，不在页面手动修改。</p>
+      <form ref="benchmarkSetFormElement" class="dialog-form" @submit.prevent="saveBenchmarkSet">
+        <label class="form-field">
+          <span class="field-label">题集名称</span>
+          <InputText v-model="benchmarkSetForm.name" required fluid />
+        </label>
+        <div class="readonly-fields">
+          <span>类型：{{ benchmarkSetForm.category || '-' }}</span>
+          <span>模态：{{ benchmarkSetForm.modality || '-' }}</span>
         </div>
-        <form class="modal-form" @submit.prevent="saveBenchmarkSet">
-          <label>
-            题集名称
-            <input v-model="benchmarkSetForm.name" required />
-          </label>
-          <div class="readonly-fields">
-            <span>类型：{{ benchmarkSetForm.category || '-' }}</span>
-            <span>模态：{{ benchmarkSetForm.modality || '-' }}</span>
-          </div>
-          <div class="modal-actions">
-            <button type="button" class="secondary" :disabled="loading" @click="closeBenchmarkSetDialog">取消</button>
-            <button type="submit" :disabled="loading">保存名称</button>
-          </div>
-        </form>
-      </section>
-    </div>
-
-    <div v-if="detailRun" class="modal-backdrop" role="presentation" @click.self="closeRunDetails">
-      <section class="modal-panel modal-panel-xl" role="dialog" aria-modal="true" aria-labelledby="run-detail-title">
-        <div class="modal-head">
-          <div>
-            <h2 id="run-detail-title">评测明细 #{{ detailRun.id }}</h2>
-            <div class="modal-subhead">
-              <span>{{ detailRun.benchmarkSetName || detailRun.benchmarkSetId }}</span>
-              <span :class="statusBadgeClass(detailRun.status)">评测状态：{{ formatStatus(detailRun.status) }}</span>
-            </div>
-          </div>
-          <button type="button" class="secondary" @click="closeRunDetails">关闭</button>
+      </form>
+      <template #footer>
+        <div class="dialog-actions">
+          <Button label="取消" severity="secondary" outlined :disabled="loading" @click="closeBenchmarkSetDialog" />
+          <Button label="保存名称" :disabled="loading" @click="benchmarkSetFormElement?.requestSubmit()" />
         </div>
+      </template>
+    </Dialog>
 
-        <div class="modal-detail">
-          <div class="progress-panel progress-panel-compact">
-            <div>
+    <Dialog
+      v-model:visible="detailDialogOpen"
+      modal
+      class="app-dialog run-detail-dialog"
+      :style="{ width: 'min(1180px, calc(100vw - 32px))' }"
+    >
+      <template #header>
+        <div>
+          <h2>评测明细 #{{ detailRun?.id ?? detailRunId }}</h2>
+          <div v-if="detailRun" class="modal-subhead">
+            <span>{{ detailRun.benchmarkSetName || detailRun.benchmarkSetId }}</span>
+            <span :class="statusBadgeClass(detailRun.status)">评测状态：{{ formatStatus(detailRun.status) }}</span>
+          </div>
+        </div>
+      </template>
+
+      <div v-if="!detailRun" class="detail-loading">
+        <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+        <span>正在加载评测运行...</span>
+      </div>
+
+      <div v-else-if="detailRun" class="modal-detail">
+        <div class="run-detail-summary">
+          <Card class="run-detail-metric">
+            <template #content>
+              <span>正确数量 / 总数量</span>
               <strong>{{ detailRun.correctCount }} / {{ detailRun.totalCount }}</strong>
-              <span>正确 / 总数</span>
-              <span>准确率 {{ formatPercent(detailRun.accuracy) }}</span>
-              <button
-                v-if="canStopRun(detailRun)"
-                type="button"
-                class="danger"
-                :disabled="loading"
-                @click="stopRun(detailRun.id)"
-              >
-                结束评测
-              </button>
-            </div>
-            <div class="progress-bar"><span :style="{ width: `${accuracyPercent(detailRun)}%` }"></span></div>
-          </div>
-
-          <div class="modal-table-scroll">
-            <table class="results-table results-table-sticky">
-              <thead>
-                <tr>
-                  <th>模型</th>
-                  <th>题目</th>
-                  <th>标准答案</th>
-                  <th>提取答案</th>
-                  <th>评测状态</th>
-                  <th>结果</th>
-                  <th>耗时</th>
-                  <th>问答记录</th>
-                </tr>
-              </thead>
-              <tbody>
-                <template v-for="result in resultsForRun(detailRun.id)" :key="result.id">
-                  <tr>
-                    <td>{{ result.modelName || result.modelConfigId }}</td>
-                    <td class="wide-cell">
-                      <p>{{ result.question }}</p>
-                    </td>
-                    <td>{{ result.expectedAnswer }}</td>
-                    <td>{{ result.extractedAnswer || '-' }}</td>
-                    <td>
-                      <span :class="statusBadgeClass(result.status)">{{ formatStatus(result.status) }}</span>
-                    </td>
-                    <td>
-                      <span v-if="result.isCorrect === true" class="tag ok">正确</span>
-                      <span v-else-if="result.isCorrect === false" class="tag bad">错误</span>
-                      <span v-else class="tag muted">待复核</span>
-                    </td>
-                    <td>{{ result.latencyMs ? `${result.latencyMs}ms` : '-' }}</td>
-                    <td>
-                      <button type="button" class="secondary" @click="toggleResultRecord(result.id)">
-                        {{ expandedResultId === result.id ? '收起记录' : '查看记录' }}
-                      </button>
-                    </td>
-                  </tr>
-                  <tr v-if="expandedResultId === result.id" class="record-row">
-                    <td colspan="8">
-                      <div class="record-panel">
-                        <section>
-                          <h3>发送给模型的内容</h3>
-                          <pre>{{ result.prompt }}</pre>
-                        </section>
-                        <section>
-                          <h3>AI 回复</h3>
-                          <pre>{{ result.modelAnswer || '暂无回复' }}</pre>
-                        </section>
-                        <section v-if="result.errorMessage">
-                          <h3>错误信息</h3>
-                          <pre>{{ result.errorMessage }}</pre>
-                        </section>
-                        <section class="record-grid">
-                          <div>
-                            <span>标准答案</span>
-                            <strong>{{ result.expectedAnswer }}</strong>
-                          </div>
-                          <div>
-                            <span>提取答案</span>
-                            <strong>{{ result.extractedAnswer || '-' }}</strong>
-                          </div>
-                          <div>
-                            <span>题目类型</span>
-                            <strong>{{ result.questionType || '-' }}</strong>
-                          </div>
-                        </section>
-                      </div>
-                    </td>
-                  </tr>
-                </template>
-                <tr v-if="!resultsForRun(detailRun.id).length">
-                  <td colspan="8" class="empty">暂无明细</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-    </div>
-
-    <div v-if="modelDialogOpen" class="modal-backdrop" role="presentation" @click.self="closeModelDialog">
-      <section class="modal-panel modal-panel-wide" role="dialog" aria-modal="true" aria-labelledby="model-dialog-title">
-        <div class="modal-head">
-          <div>
-            <h2 id="model-dialog-title">{{ modelDialogTitle }}</h2>
-            <p>{{ isEditingModel ? 'API Key 留空会保留原 Key。' : '配置模型服务商、模型名称和调用参数。' }}</p>
-          </div>
-          <button type="button" class="secondary" @click="closeModelDialog">关闭</button>
-        </div>
-
-        <form class="modal-form form-grid" @submit.prevent="saveModel">
-          <label>
-            名称
-            <input v-model="modelForm.name" required placeholder="deepseek-v4-pro" />
-          </label>
-          <label>
-            模型服务商
-            <select v-model="modelForm.provider" @change="applyProviderPreset">
-              <option v-for="provider in providerOptions" :key="provider.value" :value="provider.value">
-                {{ provider.label }}
-              </option>
-            </select>
-          </label>
-          <label>
-            模型
-            <select v-model="modelForm.model" required @change="applyModelPreset">
-              <option v-for="model in modelOptionsForForm" :key="model" :value="model">
-                {{ model }}
-              </option>
-            </select>
-          </label>
-          <label>
-            Base URL
-            <input v-model="modelForm.baseUrl" placeholder="https://api.example.com/v1" />
-          </label>
-          <label>
-            API Key
-            <input
-              v-model="modelForm.apiKey"
-              type="password"
-              autocomplete="off"
-              :placeholder="isEditingModel ? '留空则保留原 Key' : ''"
+            </template>
+          </Card>
+          <Card class="run-detail-metric">
+            <template #content>
+              <span>准确率</span>
+              <strong>{{ formatPercent(detailRun.accuracy) }}</strong>
+            </template>
+          </Card>
+          <Card class="run-detail-metric run-detail-metric-wide">
+            <template #content>
+              <div class="run-detail-status-line">
+                <span>评测状态</span>
+                <Tag :severity="runStatusTagSeverity(detailRun.status)" :value="formatStatus(detailRun.status)" />
+              </div>
+              <div class="run-detail-status-line">
+                <span>完成进度</span>
+                <strong>{{ detailRun.completedCount }} / {{ detailRun.totalCount }}</strong>
+              </div>
+              <ProgressBar
+                class="run-detail-progress"
+                :value="progressPercent(detailRun)"
+                :show-value="false"
+              />
+            </template>
+          </Card>
+          <div class="run-detail-actions">
+            <Button
+              v-if="canStopRun(detailRun)"
+              label="结束评测"
+              severity="danger"
+              :disabled="loading"
+              @click="stopRun(detailRun.id)"
             />
-          </label>
-          <label v-if="isEditingModel" class="checkbox-row">
-            <input v-model="modelForm.clearApiKey" type="checkbox" />
-            清除 Key
-          </label>
-          <div class="field-group">
-            能力
-            <div class="capability-checks">
-              <label v-for="capability in capabilityOptions" :key="capability.value" class="checkbox-row">
-                <input
-                  type="checkbox"
-                  :checked="modelForm.capabilities.includes(capability.value)"
-                  @change="toggleCapability(capability.value, $event)"
+          </div>
+        </div>
+
+        <div v-if="detailResultsLoading" class="detail-loading detail-loading-table">
+          <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+          <span>正在加载问答明细...</span>
+        </div>
+
+        <DataTable
+          v-else
+          v-model:expanded-rows="expandedResultRows"
+          :value="resultsForRun(detailRun.id)"
+          data-key="id"
+          paginator
+          :rows="50"
+          :rows-per-page-options="[50, 100, 200]"
+          paginator-template="CurrentPageReport FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown"
+          current-page-report-template="共 {totalRecords} 条 · 第 {first} - {last} 条"
+          scrollable
+          scroll-height="flex"
+          class="detail-data-table"
+          size="small"
+        >
+          <Column field="modelName" header="模型" style="min-width: 150px">
+            <template #body="{ data }">
+              {{ data.modelName || data.modelConfigId }}
+            </template>
+          </Column>
+          <Column field="question" header="题目" style="min-width: 320px">
+            <template #body="{ data }">
+              <p class="detail-question">{{ data.question }}</p>
+            </template>
+          </Column>
+          <Column field="expectedAnswer" header="标准答案" style="min-width: 110px" />
+          <Column field="extractedAnswer" header="提取答案" style="min-width: 110px">
+            <template #body="{ data }">
+              {{ data.extractedAnswer || '-' }}
+            </template>
+          </Column>
+          <Column field="status" header="评测状态" style="min-width: 110px">
+            <template #body="{ data }">
+              <Tag :severity="runStatusTagSeverity(data.status)" :value="formatStatus(data.status)" />
+            </template>
+          </Column>
+          <Column field="isCorrect" header="结果" style="min-width: 100px">
+            <template #body="{ data }">
+              <Tag v-if="data.isCorrect === true" severity="success" value="正确" />
+              <Tag v-else-if="data.isCorrect === false" severity="danger" value="错误" />
+              <Tag v-else severity="secondary" value="待评测" />
+            </template>
+          </Column>
+          <Column field="latencyMs" header="耗时" style="min-width: 90px">
+            <template #body="{ data }">
+              {{ data.latencyMs ? `${data.latencyMs}ms` : '-' }}
+            </template>
+          </Column>
+          <Column header="操作" style="min-width: 180px">
+            <template #body="{ data }">
+              <div class="row-actions">
+                <Button
+                  :label="expandedResultRows[data.id] ? '收起记录' : '查看记录'"
+                  severity="secondary"
+                  outlined
+                  size="small"
+                  @click="toggleResultRecord(data.id)"
                 />
-                {{ capability.label }}
-              </label>
+                <Button
+                  v-if="canRetryResult(data)"
+                  :label="isRetryingResult(data.id) ? '重试中' : '重试'"
+                  severity="warn"
+                  outlined
+                  size="small"
+                  :disabled="isRetryingResult(data.id)"
+                  @click="retryResult(data)"
+                />
+              </div>
+            </template>
+          </Column>
+          <template #expansion="{ data }">
+            <div class="record-panel">
+              <Panel header="发送给模型的内容" toggleable>
+                <pre>{{ data.prompt }}</pre>
+              </Panel>
+              <Panel header="AI 回复" toggleable>
+                <pre>{{ data.modelAnswer || '暂无回复' }}</pre>
+              </Panel>
+              <Panel v-if="data.errorMessage" header="错误信息" toggleable>
+                <pre>{{ data.errorMessage }}</pre>
+              </Panel>
+              <div class="record-grid">
+                <div>
+                  <span>标准答案</span>
+                  <strong>{{ data.expectedAnswer }}</strong>
+                </div>
+                <div>
+                  <span>提取答案</span>
+                  <strong>{{ data.extractedAnswer || '-' }}</strong>
+                </div>
+                <div>
+                  <span>题目类型</span>
+                  <strong>{{ questionTypeLabel(data.questionType) }}</strong>
+                </div>
+              </div>
             </div>
+          </template>
+          <template #empty>
+            <div class="empty">暂无明细</div>
+          </template>
+        </DataTable>
+      </div>
+    </Dialog>
+
+    <Dialog
+      :visible="modelDialogOpen"
+      modal
+      class="app-dialog"
+      :header="modelDialogTitle"
+      :style="{ width: 'min(860px, calc(100vw - 32px))' }"
+      @update:visible="(visible) => { if (!visible) closeModelDialog(); }"
+    >
+      <p class="dialog-description">
+        {{ isEditingModel ? 'API Key 留空会保留原 Key。' : '配置模型服务商、模型名称和调用参数。' }}
+      </p>
+
+      <form ref="modelFormElement" class="dialog-form dialog-form-grid" @submit.prevent="saveModel">
+        <label class="form-field">
+          <span class="field-label">名称</span>
+          <InputText v-model="modelForm.name" required placeholder="deepseek-v4-pro" fluid />
+        </label>
+        <label class="form-field">
+          <span class="field-label">模型服务商</span>
+          <Select
+            v-model="modelForm.provider"
+            :options="providerOptions"
+            option-label="label"
+            option-value="value"
+            fluid
+            @change="applyProviderPreset"
+          />
+        </label>
+        <label class="form-field">
+          <span class="field-label">模型</span>
+          <Select
+            v-model="modelForm.model"
+            :options="modelOptionsForForm"
+            required
+            editable
+            fluid
+            @change="applyModelPreset"
+          />
+        </label>
+        <label class="form-field">
+          <span class="field-label">Base URL</span>
+          <InputText v-model="modelForm.baseUrl" placeholder="https://api.example.com/v1" fluid />
+        </label>
+        <label class="form-field">
+          <span class="field-label">API Key</span>
+          <Password
+            v-model="modelForm.apiKey"
+            autocomplete="off"
+            :feedback="false"
+            toggle-mask
+            fluid
+            :placeholder="isEditingModel ? '留空则保留原 Key' : ''"
+          />
+        </label>
+        <label v-if="isEditingModel" class="checkbox-row prime-checkbox-row">
+          <Checkbox v-model="modelForm.clearApiKey" binary input-id="clear-api-key" />
+          <span>清除 Key</span>
+        </label>
+        <div class="field-group">
+          <span class="field-label">能力</span>
+          <div class="capability-checks prime-checkbox-group">
+            <label v-for="capability in capabilityOptions" :key="capability.value" class="checkbox-row prime-checkbox-row">
+              <Checkbox v-model="modelForm.capabilities" :input-id="`capability-${capability.value}`" :value="capability.value" />
+              <span>{{ capability.label }}</span>
+            </label>
           </div>
-          <label>
-            Max Output Tokens
-            <input v-model.number="modelForm.maxOutputTokens" type="number" min="128" max="32768" />
-          </label>
-          <label class="checkbox-row">
-            <input v-model="modelForm.enabled" type="checkbox" />
-            启用
-          </label>
-        </form>
-
-        <div class="modal-actions">
-          <button type="button" class="secondary" :disabled="loading" @click="closeModelDialog">取消</button>
-          <button type="button" :disabled="loading" @click="saveModel">
-            {{ isEditingModel ? '更新模型' : '保存模型' }}
-          </button>
         </div>
-      </section>
-    </div>
+        <label class="form-field">
+          <span class="field-label">Max Output Tokens</span>
+          <InputNumber v-model="modelForm.maxOutputTokens" :min="128" :max="32768" fluid />
+        </label>
+        <label class="checkbox-row prime-checkbox-row">
+          <Checkbox v-model="modelForm.enabled" binary input-id="model-enabled" />
+          <span>启用</span>
+        </label>
+      </form>
 
-    <div v-if="runDialogOpen" class="modal-backdrop" role="presentation" @click.self="closeRunDialog">
-      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="run-dialog-title">
-        <div class="modal-head">
-          <div>
-            <h2 id="run-dialog-title">选择评测模型</h2>
-            <p>为当前题集选择一个或多个支持文本能力的模型。</p>
-          </div>
-          <button type="button" class="secondary" @click="closeRunDialog">关闭</button>
+      <template #footer>
+        <div class="dialog-actions">
+          <Button label="取消" severity="secondary" outlined :disabled="loading" @click="closeModelDialog" />
+          <Button
+            :label="isEditingModel ? '更新模型' : '保存模型'"
+            :disabled="loading"
+            @click="modelFormElement?.requestSubmit()"
+          />
         </div>
+      </template>
+    </Dialog>
 
-        <div class="modal-list">
-          <label v-for="model in runnableModels" :key="model.id" class="modal-model-row">
-            <input
-              type="checkbox"
-              :checked="selectedModelIds.includes(model.id)"
-              @change="onModelSelectionChange(model.id, $event)"
-            />
-            <span>
-              <strong>{{ model.name }}</strong>
-              <small>{{ providerLabel(model.provider) }} · {{ model.model }}</small>
-            </span>
-          </label>
-        </div>
+    <Dialog
+      :visible="runDialogOpen"
+      modal
+      header="启动评测"
+      class="app-dialog"
+      :style="{ width: 'min(640px, calc(100vw - 32px))' }"
+      @update:visible="(visible) => { if (!visible) closeRunDialog(); }"
+    >
+      <p class="dialog-description">选择题集和一个或多个支持文本能力的模型后启动评测。</p>
 
-        <div class="modal-actions">
-          <button type="button" class="secondary" @click="closeRunDialog">取消</button>
-          <button type="button" :disabled="loading || !selectedModelIds.length" @click="createRun">
-            确认启动
-          </button>
+      <div v-if="runCreateLoading" class="inline-loading">
+        <i class="pi pi-spin pi-spinner" aria-hidden="true"></i>
+        <span>正在启动评测...</span>
+      </div>
+
+      <label class="form-field run-dialog-field">
+        <span class="field-label">题集</span>
+        <Select
+          v-model="selectedBenchmarkSetId"
+          :disabled="runCreateLoading"
+          :options="benchmarkSets"
+          option-label="name"
+          option-value="id"
+          placeholder="请选择题集"
+          fluid
+        >
+          <template #option="{ option }">
+            <div class="select-option-stack">
+              <strong>{{ option.name }}</strong>
+              <small>{{ option.category }} · {{ option.modality }} · {{ option.questionCount }} 题</small>
+            </div>
+          </template>
+          <template #value="{ value }">
+            <span>{{ benchmarkSetNameById(value) }}</span>
+          </template>
+        </Select>
+      </label>
+
+      <div class="modal-list">
+        <label v-for="model in runnableModels" :key="model.id" class="modal-model-row">
+          <Checkbox
+            v-model="selectedModelIds"
+            :disabled="runCreateLoading"
+            :input-id="`run-model-${model.id}`"
+            :value="model.id"
+          />
+          <span>
+            <strong>{{ model.name }}</strong>
+            <small>{{ providerLabel(model.provider) }} · {{ model.model }}</small>
+          </span>
+        </label>
+      </div>
+
+      <template #footer>
+        <div class="dialog-actions">
+          <Button label="取消" severity="secondary" outlined :disabled="runCreateLoading" @click="closeRunDialog" />
+          <Button
+            :label="runCreateLoading ? '启动中' : '确认启动'"
+            :disabled="runCreateLoading || !selectedModelIds.length"
+            @click="createRun"
+          />
         </div>
-      </section>
-    </div>
+      </template>
+    </Dialog>
     </template>
   </main>
 </template>

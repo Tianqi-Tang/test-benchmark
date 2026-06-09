@@ -57,42 +57,13 @@ def run_evaluation(run_id: int) -> None:
             result = db.get(EvaluationResult, result_id)
             if result is None:
                 continue
-            model_config = db.get(ModelConfig, result.model_config_id)
-            question = db.get(BenchmarkQuestion, result.benchmark_question_id)
-            if model_config is None or question is None:
-                result.status = "failed"
-                result.error_message = "Model config or benchmark question no longer exists."
-                db.commit()
-                _refresh_run_progress(db, run_id)
-                continue
-
-            result.status = "running"
-            db.commit()
-
-            llm_result = call_model(model_config, result.prompt)
+            run_result_once(db, result)
             if _run_status(db, run_id) == "stopped":
                 result.status = "stopped"
                 result.error_message = "Run stopped by user."
                 db.commit()
                 _refresh_run_progress(db, run_id)
                 break
-
-            result.latency_ms = llm_result.latency_ms
-            result.raw_response = llm_result.raw_response
-
-            if llm_result.ok:
-                result.model_answer = llm_result.text
-                extracted, correct, score = score_answer(question, llm_result.text)
-                result.extracted_answer = extracted
-                result.is_correct = correct
-                result.score = score
-                result.status = "completed"
-            else:
-                result.status = "failed"
-                result.error_message = llm_result.error
-
-            db.commit()
-            _refresh_run_progress(db, run_id)
 
     with SessionLocal() as db:
         run = db.get(EvaluationRun, run_id)
@@ -127,6 +98,63 @@ def prepare_run_items(db, run: EvaluationRun, model_configs: list[ModelConfig], 
                     status="pending",
                 )
             )
+
+
+def run_result_once(db, result: EvaluationResult) -> EvaluationResult:
+    model_config = db.get(ModelConfig, result.model_config_id)
+    question = db.get(BenchmarkQuestion, result.benchmark_question_id)
+    if model_config is None or question is None:
+        result.status = "failed"
+        result.error_message = "Model config or benchmark question no longer exists."
+        db.commit()
+        _refresh_run_progress(db, result.evaluation_run_id)
+        return result
+
+    result.status = "running"
+    result.model_answer = None
+    result.extracted_answer = None
+    result.is_correct = None
+    result.score = None
+    result.latency_ms = None
+    result.error_message = None
+    result.raw_response = None
+    db.commit()
+
+    llm_result = call_model(model_config, result.prompt)
+    result.latency_ms = llm_result.latency_ms
+    result.raw_response = llm_result.raw_response
+
+    if llm_result.ok:
+        result.model_answer = llm_result.text
+        extracted, correct, score = score_answer(question, llm_result.text)
+        result.extracted_answer = extracted
+        result.is_correct = correct
+        result.score = score
+        result.status = "completed"
+    else:
+        result.status = "failed"
+        result.error_message = llm_result.error
+
+    db.commit()
+    _refresh_run_progress(db, result.evaluation_run_id)
+    db.refresh(result)
+    return result
+
+
+def refresh_run_completion_status(db, run_id: int) -> None:
+    run = db.get(EvaluationRun, run_id)
+    if run is None or run.status in {"pending", "running", "stopped"}:
+        return
+    failed_count = db.scalar(
+        select(func.count(EvaluationResult.id)).where(
+            EvaluationResult.evaluation_run_id == run_id,
+            EvaluationResult.status == "failed",
+        )
+    ) or 0
+    run.status = "failed" if failed_count == run.total_count and run.total_count > 0 else "completed"
+    run.finished_at = run.finished_at or utc_now()
+    _refresh_run_progress(db, run_id, commit=False)
+    db.commit()
 
 
 def _run_status(db, run_id: int) -> str | None:
