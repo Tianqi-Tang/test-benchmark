@@ -791,10 +791,59 @@ td .status-badge {
   white-space: normal;
 }
 
+.record-dialog-panel {
+  border: 0;
+  padding: 0;
+}
+
+.record-panel-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.json-record-content {
+  max-height: min(620px, calc(100vh - 180px));
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e5e7eb;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.question-number-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
 .record-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.question-popover-content {
+  display: grid;
+  max-width: min(520px, calc(100vw - 48px));
+  gap: 8px;
+}
+
+.question-popover-content p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .record-grid div {
@@ -1115,11 +1164,6 @@ td .status-badge {
   font-size: 12px;
 }
 
-.detail-question {
-  max-width: 460px;
-  white-space: normal;
-}
-
 .modal-table-scroll {
   min-height: 0;
   overflow: auto;
@@ -1153,6 +1197,77 @@ td .status-badge {
   margin-top: 3px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.run-model-row {
+  grid-template-columns: minmax(180px, 1fr) minmax(92px, auto) minmax(240px, 0.9fr);
+  align-items: center;
+  column-gap: 14px;
+}
+
+.run-model-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.run-model-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.run-test-icon {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.run-test-icon.ok {
+  background: #e9f7ef;
+  color: var(--ok);
+}
+
+.run-test-icon.bad {
+  background: #fff0ed;
+  color: var(--danger);
+}
+
+.run-judge-field {
+  min-width: 0;
+}
+
+.run-judge-select {
+  min-height: 34px;
+  font-size: 13px;
+}
+
+.run-judge-select .p-select-label {
+  padding-block: 6px;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.run-judge-select .p-select-dropdown {
+  width: 34px;
+}
+
+.run-judge-select .select-option-stack strong {
+  font-size: 13px;
+}
+
+.run-judge-select .select-option-stack small {
+  font-size: 12px;
+}
+
+.run-judge-placeholder {
+  min-height: 32px;
 }
 
 .dialog-actions {

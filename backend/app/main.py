@@ -15,6 +15,7 @@ from .auth import AUTH_COOKIE_NAME, auth_configured, login, logout, require_sess
 from .benchmark_importer import BenchmarkImportError, import_custom_medical_eval_sets, import_jsonl_lines
 from .database import get_db, init_db
 from .evaluation_runner import prepare_run_items, refresh_run_completion_status, run_result_once, start_evaluation_run, stop_evaluation_run
+from .judging import build_judge_prompt
 from .llm import call_model
 from .models import BenchmarkQuestion, BenchmarkSet, EvaluationResult, EvaluationRun, ModelConfig
 from .schemas import (
@@ -159,7 +160,9 @@ def test_model(model_id: int, _: None = Depends(require_session), db: Session = 
 
 @app.get("/api/benchmark-sets", response_model=list[BenchmarkSetOut])
 def list_benchmark_sets(_: None = Depends(require_session), db: Session = Depends(get_db)) -> list[BenchmarkSetOut]:
-    rows = db.scalars(select(BenchmarkSet).order_by(BenchmarkSet.created_at.desc())).all()
+    rows = db.scalars(
+        select(BenchmarkSet).options(selectinload(BenchmarkSet.questions)).order_by(BenchmarkSet.created_at.desc())
+    ).all()
     return [_benchmark_set_out(row) for row in rows]
 
 
@@ -202,7 +205,14 @@ async def import_jsonl_benchmark(
 
 @app.get("/api/benchmark-sets/{benchmark_set_id}", response_model=BenchmarkSetOut)
 def get_benchmark_set(benchmark_set_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> BenchmarkSetOut:
-    return _benchmark_set_out(_get_benchmark_set_or_404(db, benchmark_set_id))
+    row = db.scalar(
+        select(BenchmarkSet)
+        .options(selectinload(BenchmarkSet.questions))
+        .where(BenchmarkSet.id == benchmark_set_id)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Benchmark set not found.")
+    return _benchmark_set_out(row)
 
 
 @app.put("/api/benchmark-sets/{benchmark_set_id}", response_model=BenchmarkSetOut)
@@ -321,17 +331,45 @@ def create_evaluation_run(payload: EvaluationRunCreate, _: None = Depends(requir
         raise HTTPException(status_code=400, detail="One or more model configs do not exist or are disabled.")
     if any(not _model_supports_capability(model_config, "text") for model_config in model_configs):
         raise HTTPException(status_code=400, detail="Current text benchmarks require models with text capability.")
+    has_qa_questions = any(question.question_type == "qa" for question in questions)
+    judge_model_ids_by_model = {int(model_id): int(judge_id) for model_id, judge_id in payload.judgeModelConfigIds.items()}
+
+    judge_configs_by_id: dict[int, ModelConfig] = {}
+    if has_qa_questions:
+        missing_judge_ids = [model_config.id for model_config in model_configs if model_config.id not in judge_model_ids_by_model]
+        if missing_judge_ids:
+            raise HTTPException(status_code=400, detail="QA benchmarks require one judge model for each selected model.")
+        judge_ids = set(judge_model_ids_by_model.values())
+        judge_configs = db.scalars(
+            select(ModelConfig).where(ModelConfig.id.in_(judge_ids), ModelConfig.enabled.is_(True))
+        ).all()
+        judge_configs_by_id = {judge_config.id: judge_config for judge_config in judge_configs}
+        if len(judge_configs_by_id) != len(judge_ids):
+            raise HTTPException(status_code=400, detail="One or more judge models do not exist or are disabled.")
+        for model_config in model_configs:
+            judge_id = judge_model_ids_by_model.get(model_config.id)
+            judge_config = judge_configs_by_id.get(judge_id) if judge_id is not None else None
+            if judge_config is None:
+                raise HTTPException(status_code=400, detail="QA benchmarks require one judge model for each selected model.")
+            if judge_config.id == model_config.id:
+                raise HTTPException(status_code=400, detail="Judge model cannot be the same as the evaluated model.")
+            if judge_config.last_test_status != "success":
+                raise HTTPException(status_code=400, detail="Judge model must have a successful latest test.")
+            if not _model_supports_capability(judge_config, "text"):
+                raise HTTPException(status_code=400, detail="Judge model must support text capability.")
 
     runs: list[EvaluationRun] = []
     for model_config in model_configs:
+        judge_id = judge_model_ids_by_model.get(model_config.id) if has_qa_questions else None
         run = EvaluationRun(
             benchmark_set_id=benchmark_set.id,
+            judge_model_config_id=judge_id,
             status="pending",
             total_count=len(questions),
         )
         db.add(run)
         db.flush()
-        prepare_run_items(db, run, [model_config], list(questions))
+        prepare_run_items(db, run, [model_config], list(questions), judge_model_config_id=judge_id)
         runs.append(run)
     db.commit()
     run_ids = [run.id for run in runs]
@@ -339,11 +377,14 @@ def create_evaluation_run(payload: EvaluationRunCreate, _: None = Depends(requir
         start_evaluation_run(run.id)
     created_runs = db.scalars(
         select(EvaluationRun)
-        .options(selectinload(EvaluationRun.results).selectinload(EvaluationResult.model_config))
+        .options(
+            selectinload(EvaluationRun.judge_model_config),
+            selectinload(EvaluationRun.results).selectinload(EvaluationResult.model_config),
+        )
         .where(EvaluationRun.id.in_(run_ids))
         .order_by(EvaluationRun.id)
     ).all()
-    return [_run_out(run, benchmark_set.name) for run in created_runs]
+    return [_run_out(run, benchmark_set.name, db) for run in created_runs]
 
 
 @app.get("/api/evaluation-runs", response_model=list[EvaluationRunOut])
@@ -352,12 +393,13 @@ def list_evaluation_runs(_: None = Depends(require_session), db: Session = Depen
         select(EvaluationRun)
         .options(
             selectinload(EvaluationRun.benchmark_set),
+            selectinload(EvaluationRun.judge_model_config),
             selectinload(EvaluationRun.results).selectinload(EvaluationResult.model_config),
         )
         .order_by(EvaluationRun.created_at.desc())
         .limit(50)
     ).all()
-    return [_run_out(row, row.benchmark_set.name if row.benchmark_set else None) for row in rows]
+    return [_run_out(row, row.benchmark_set.name if row.benchmark_set else None, db) for row in rows]
 
 
 @app.get("/api/evaluation-runs/{run_id}", response_model=EvaluationRunOut)
@@ -366,13 +408,14 @@ def get_evaluation_run(run_id: int, _: None = Depends(require_session), db: Sess
         select(EvaluationRun)
         .options(
             selectinload(EvaluationRun.benchmark_set),
+            selectinload(EvaluationRun.judge_model_config),
             selectinload(EvaluationRun.results).selectinload(EvaluationResult.model_config),
         )
         .where(EvaluationRun.id == run_id)
     )
     if run is None:
         raise HTTPException(status_code=404, detail="Evaluation run not found.")
-    return _run_out(run, run.benchmark_set.name if run.benchmark_set else None)
+    return _run_out(run, run.benchmark_set.name if run.benchmark_set else None, db)
 
 
 @app.post("/api/evaluation-runs/{run_id}/stop", response_model=EvaluationRunOut)
@@ -381,6 +424,7 @@ def stop_run(run_id: int, _: None = Depends(require_session), db: Session = Depe
         select(EvaluationRun)
         .options(
             selectinload(EvaluationRun.benchmark_set),
+            selectinload(EvaluationRun.judge_model_config),
             selectinload(EvaluationRun.results).selectinload(EvaluationResult.model_config),
         )
         .where(EvaluationRun.id == run_id)
@@ -388,7 +432,7 @@ def stop_run(run_id: int, _: None = Depends(require_session), db: Session = Depe
     if run is None:
         raise HTTPException(status_code=404, detail="Evaluation run not found.")
     stop_evaluation_run(db, run)
-    return _run_out(run, run.benchmark_set.name if run.benchmark_set else None)
+    return _run_out(run, run.benchmark_set.name if run.benchmark_set else None, db)
 
 
 @app.delete("/api/evaluation-runs/{run_id}")
@@ -409,7 +453,11 @@ def list_evaluation_results(run_id: int, _: None = Depends(require_session), db:
         raise HTTPException(status_code=404, detail="Evaluation run not found.")
     rows = db.scalars(
         select(EvaluationResult)
-        .options(selectinload(EvaluationResult.model_config), selectinload(EvaluationResult.question))
+        .options(
+            selectinload(EvaluationResult.model_config),
+            selectinload(EvaluationResult.judge_model_config),
+            selectinload(EvaluationResult.question),
+        )
         .join(BenchmarkQuestion, BenchmarkQuestion.id == EvaluationResult.benchmark_question_id)
         .where(EvaluationResult.evaluation_run_id == run_id)
         .order_by(BenchmarkQuestion.source_row, EvaluationResult.id)
@@ -421,7 +469,11 @@ def list_evaluation_results(run_id: int, _: None = Depends(require_session), db:
 def retry_evaluation_result(result_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> EvaluationResultOut:
     result = db.scalar(
         select(EvaluationResult)
-        .options(selectinload(EvaluationResult.model_config), selectinload(EvaluationResult.question))
+        .options(
+            selectinload(EvaluationResult.model_config),
+            selectinload(EvaluationResult.judge_model_config),
+            selectinload(EvaluationResult.question),
+        )
         .where(EvaluationResult.id == result_id)
     )
     if result is None:
@@ -431,10 +483,7 @@ def retry_evaluation_result(result_id: int, _: None = Depends(require_session), 
         raise HTTPException(status_code=404, detail="Evaluation run not found.")
     if result.status in {"pending", "running"}:
         raise HTTPException(status_code=409, detail="Cannot retry a result that has not finished yet.")
-    retryable = result.status == "failed" or (
-        result.status == "completed" and result.model_answer is not None and not (result.extracted_answer or "").strip()
-    )
-    if not retryable:
+    if not _result_is_retryable(result):
         raise HTTPException(status_code=400, detail="This result is not retryable.")
     result = run_result_once(db, result)
     refresh_run_completion_status(db, result.evaluation_run_id)
@@ -509,6 +558,7 @@ def _model_out(row: ModelConfig) -> ModelConfigOut:
 
 
 def _benchmark_set_out(row: BenchmarkSet) -> BenchmarkSetOut:
+    requires_judge = any(question.question_type == "qa" for question in row.questions)
     return BenchmarkSetOut(
         id=row.id,
         name=row.name,
@@ -516,6 +566,7 @@ def _benchmark_set_out(row: BenchmarkSet) -> BenchmarkSetOut:
         sourcePath=row.source_path,
         modality=row.modality,
         questionCount=row.question_count,
+        requiresJudge=requires_judge,
         createdAt=row.created_at,
         updatedAt=row.updated_at,
     )
@@ -529,10 +580,11 @@ def _question_out(row: BenchmarkQuestion) -> BenchmarkQuestionOut:
         question=row.question,
         options=row.options,
         answer=row.answer,
+        maxScore=row.max_score,
     )
 
 
-def _run_out(row: EvaluationRun, benchmark_set_name: str | None = None) -> EvaluationRunOut:
+def _run_out(row: EvaluationRun, benchmark_set_name: str | None = None, db: Session | None = None) -> EvaluationRunOut:
     model_names = sorted(
         {
             result.model_config.name
@@ -540,11 +592,13 @@ def _run_out(row: EvaluationRun, benchmark_set_name: str | None = None) -> Evalu
             if result.model_config is not None
         }
     )
+    judge_model_name = _model_name_or_fallback(row.judge_model_config, row.judge_model_config_id, db)
     return EvaluationRunOut(
         id=row.id,
         benchmarkSetId=row.benchmark_set_id,
         benchmarkSetName=benchmark_set_name,
         modelNames=model_names,
+        judgeModelName=judge_model_name,
         status=row.status,
         totalCount=row.total_count,
         completedCount=row.completed_count,
@@ -560,6 +614,8 @@ def _run_out(row: EvaluationRun, benchmark_set_name: str | None = None) -> Evalu
 def _result_out(row: EvaluationResult) -> EvaluationResultOut:
     question = row.question
     model_config = row.model_config
+    judge_model_name = _model_name_or_fallback(row.judge_model_config, row.judge_model_config_id)
+    judge_prompt = build_judge_prompt(question, row.model_answer) if question is not None and row.model_answer else None
     return EvaluationResultOut(
         id=row.id,
         evaluationRunId=row.evaluation_run_id,
@@ -573,15 +629,44 @@ def _result_out(row: EvaluationResult) -> EvaluationResultOut:
         status=row.status,
         prompt=row.prompt,
         expectedAnswer=row.expected_answer,
+        maxScore=row.max_score,
         modelAnswer=row.model_answer,
+        rawResponse=row.raw_response,
         extractedAnswer=row.extracted_answer,
         isCorrect=row.is_correct,
         score=row.score,
+        judgeModelConfigId=row.judge_model_config_id,
+        judgeModelName=judge_model_name,
+        judgeStatus=row.judge_status,
+        judgeScoreRatio=row.judge_score_ratio,
+        judgeReason=row.judge_reason,
+        judgePrompt=judge_prompt,
+        judgeRawResponse=row.judge_raw_response,
         latencyMs=row.latency_ms,
         errorMessage=row.error_message,
         createdAt=row.created_at,
         updatedAt=row.updated_at,
     )
+
+
+def _model_name_or_fallback(
+    model_config: ModelConfig | None,
+    model_config_id: int | None,
+    db: Session | None = None,
+) -> str | None:
+    if model_config is not None:
+        return model_config.name
+    if model_config_id and db is not None:
+        row = db.get(ModelConfig, model_config_id)
+        if row is not None:
+            return row.name
+    return f"模型 #{model_config_id}" if model_config_id else None
+
+
+def _result_is_retryable(result: EvaluationResult) -> bool:
+    if result.status in {"failed", "judge_failed"}:
+        return True
+    return result.status == "completed" and result.model_answer is not None and not (result.extracted_answer or "").strip()
 
 
 def _model_score_out(db: Session, model_config: ModelConfig) -> ModelScoreOut:
@@ -620,7 +705,8 @@ def _model_score_out(db: Session, model_config: ModelConfig) -> ModelScoreOut:
     scored_count = sum(1 for row in results if row.score is not None)
     correct_count = sum(1 for row in results if row.is_correct is True)
     total_score = sum(float(row.score) for row in results if row.score is not None)
-    accuracy = float(total_score / scored_count) if scored_count else 0.0
+    total_max_score = sum(float(row.max_score) for row in results if row.score is not None)
+    accuracy = float(total_score / total_max_score) if total_max_score else 0.0
     latest_at = latest_run.finished_at or latest_run.started_at or latest_run.created_at
     return ModelScoreOut(
         modelConfigId=model_config.id,

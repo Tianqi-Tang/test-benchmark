@@ -103,6 +103,7 @@ class BenchmarkSetOut(BaseModel):
     sourcePath: Optional[str]
     modality: str
     questionCount: int
+    requiresJudge: bool
     createdAt: datetime
     updatedAt: datetime
 
@@ -118,6 +119,7 @@ class BenchmarkQuestionOut(BaseModel):
     question: str
     options: Optional[str]
     answer: str
+    maxScore: float
 
 
 class BenchmarkQuestionUpdate(BaseModel):
@@ -135,6 +137,7 @@ class ImportResultOut(BaseModel):
 class EvaluationRunCreate(BaseModel):
     benchmarkSetId: int
     modelConfigIds: List[int] = Field(min_length=1)
+    judgeModelConfigIds: dict[int, int] = Field(default_factory=dict)
 
 
 class EvaluationRunOut(BaseModel):
@@ -142,6 +145,7 @@ class EvaluationRunOut(BaseModel):
     benchmarkSetId: int
     benchmarkSetName: Optional[str] = None
     modelNames: List[str] = Field(default_factory=list)
+    judgeModelName: Optional[str] = None
     status: str
     totalCount: int
     completedCount: int
@@ -166,10 +170,19 @@ class EvaluationResultOut(BaseModel):
     status: str
     prompt: str
     expectedAnswer: str
+    maxScore: float
     modelAnswer: Optional[str]
+    rawResponse: Optional[dict]
     extractedAnswer: Optional[str]
     isCorrect: Optional[bool]
     score: Optional[float]
+    judgeModelConfigId: Optional[int]
+    judgeModelName: Optional[str] = None
+    judgeStatus: Optional[str]
+    judgeScoreRatio: Optional[float]
+    judgeReason: Optional[str]
+    judgePrompt: Optional[str] = None
+    judgeRawResponse: Optional[dict]
     latencyMs: Optional[int]
     errorMessage: Optional[str]
     createdAt: datetime

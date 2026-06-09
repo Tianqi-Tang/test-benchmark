@@ -11,11 +11,13 @@ import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
 import Panel from 'primevue/panel';
 import Password from 'primevue/password';
+import Popover from 'primevue/popover';
 import ProgressBar from 'primevue/progressbar';
 import Select from 'primevue/select';
 import TabMenu from 'primevue/tabmenu';
 import Tag from 'primevue/tag';
 import Toast from 'primevue/toast';
+import Tooltip from 'primevue/tooltip';
 import { useConfirm } from 'primevue/useconfirm';
 import { useToast } from 'primevue/usetoast';
 
@@ -42,6 +44,7 @@ type BenchmarkSet = {
   sourcePath: string | null;
   modality: string;
   questionCount: number;
+  requiresJudge: boolean;
 };
 
 type BenchmarkQuestion = {
@@ -58,6 +61,7 @@ type EvaluationRun = {
   benchmarkSetId: number;
   benchmarkSetName: string | null;
   modelNames: string[];
+  judgeModelName: string | null;
   status: string;
   totalCount: number;
   completedCount: number;
@@ -82,12 +86,26 @@ type EvaluationResult = {
   status: string;
   prompt: string;
   expectedAnswer: string;
+  maxScore: number;
   modelAnswer: string | null;
+  rawResponse: Record<string, unknown> | null;
   extractedAnswer: string | null;
   isCorrect: boolean | null;
   score: number | null;
+  judgeModelConfigId: number | null;
+  judgeModelName: string | null;
+  judgeStatus: string | null;
+  judgeScoreRatio: number | null;
+  judgeReason: string | null;
+  judgePrompt: string | null;
+  judgeRawResponse: Record<string, unknown> | null;
   latencyMs: number | null;
   errorMessage: string | null;
+};
+
+type JsonRecordDialog = {
+  title: string;
+  payload: unknown;
 };
 
 type ModelScore = {
@@ -157,6 +175,7 @@ const modelScores = ref<ModelScore[]>([]);
 const runResults = ref<Record<number, EvaluationResult[]>>({});
 const selectedBenchmarkSetId = ref<number | null>(null);
 const selectedModelIds = ref<number[]>([]);
+const selectedJudgeModelIds = ref<Record<number, number | null>>({});
 const editingModelId = ref<number | null>(null);
 const editingBenchmarkSetId = ref<number | null>(null);
 const editingQuestionId = ref<number | null>(null);
@@ -170,7 +189,10 @@ const modelFormElement = ref<HTMLFormElement | null>(null);
 const detailRunId = ref<number | null>(null);
 const detailResultsLoading = ref(false);
 const detailResultsRequestId = ref(0);
-const expandedResultRows = ref<Record<number, boolean>>({});
+const selectedResultRecord = ref<EvaluationResult | null>(null);
+const jsonRecordDialog = ref<JsonRecordDialog | null>(null);
+const questionPopover = ref<InstanceType<typeof Popover> | null>(null);
+const questionPopoverResult = ref<EvaluationResult | null>(null);
 const retryingResultIds = ref<Set<number>>(new Set());
 const testingModelIds = ref<Set<number>>(new Set());
 const modelTestStates = ref<Record<number, ModelTestState>>({});
@@ -181,6 +203,7 @@ const notice = ref('');
 const error = ref('');
 const confirm = useConfirm();
 const toast = useToast();
+const vTooltip = Tooltip;
 
 const tabMenuItems = computed(() => tabs.map((tab) => ({ label: tab.label })));
 const activeTabIndex = computed(() => {
@@ -299,6 +322,9 @@ const appBasePath = import.meta.env.BASE_URL ?? '/';
 
 const hasActiveRuns = computed(() => runs.value.some((run) => run.status === 'pending' || run.status === 'running'));
 const runnableModels = computed(() => models.value.filter((model) => model.enabled && modelSupportsCapability(model, 'text')));
+const judgeModels = computed(() =>
+  runnableModels.value.filter((model) => model.lastTestStatus === 'success' || modelTestStates.value[model.id]?.status === 'success'),
+);
 const isEditingModel = computed(() => editingModelId.value !== null);
 const selectedProvider = computed(() => providerOption(modelForm.provider) ?? providerOptions[0]);
 const modelOptionsForForm = computed(() => {
@@ -308,6 +334,17 @@ const modelOptionsForForm = computed(() => {
 const modelDialogTitle = computed(() => (isEditingModel.value ? '编辑模型' : '新增模型'));
 const selectedBenchmarkSet = computed(() => {
   return benchmarkSets.value.find((set) => set.id === selectedBenchmarkSetId.value) ?? null;
+});
+const selectedBenchmarkRequiresJudge = computed(() => selectedBenchmarkSet.value?.requiresJudge ?? false);
+const selectedModelsMissingJudge = computed(() => {
+  if (!selectedBenchmarkRequiresJudge.value) return [];
+  return selectedModelIds.value.filter((modelId) => {
+    const judgeModelId = selectedJudgeModelIds.value[modelId] ?? null;
+    return !judgeModelId || !judgeModelOptionsFor(modelId).some((model) => model.id === judgeModelId);
+  });
+});
+const canSubmitRun = computed(() => {
+  return !runCreateLoading.value && Boolean(selectedModelIds.value.length) && selectedModelsMissingJudge.value.length === 0;
 });
 const detailRun = computed(() => runs.value.find((run) => run.id === detailRunId.value) ?? null);
 const scoredModelScores = computed(() => modelScores.value.filter((score) => score.scoredCount > 0));
@@ -460,7 +497,7 @@ function clearWorkspaceState() {
   modelTestStates.value = {};
   detailRunId.value = null;
   detailResultsLoading.value = false;
-  expandedResultRows.value = {};
+  selectedResultRecord.value = null;
   retryingResultIds.value = new Set();
   modelDialogOpen.value = false;
   benchmarkSetDialogOpen.value = false;
@@ -481,6 +518,9 @@ async function refreshRunsAndResults() {
     await loadModelScores();
     if (detailRunId.value) {
       await loadRunResults(detailRunId.value);
+      if (selectedResultRecord.value) {
+        selectedResultRecord.value = runResults.value[detailRunId.value]?.find((row) => row.id === selectedResultRecord.value?.id) ?? null;
+      }
     }
   } catch {
     // polling should not steal focus with repeated errors
@@ -662,6 +702,7 @@ async function testModel(modelId: number) {
       toast.add({ severity: 'error', summary: '模型测试失败', detail: `${modelName}：${result.message}`, life: 7000 });
     }
     await loadModels();
+    syncJudgeSelections();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     modelTestStates.value = {
@@ -772,7 +813,7 @@ async function deleteBenchmarkSet(set: BenchmarkSet) {
       questions.value = [];
     }
     detailRunId.value = null;
-    expandedResultRows.value = {};
+    selectedResultRecord.value = null;
     await Promise.all([loadBenchmarkSets(), loadRuns(), loadModelScores()]);
   });
 }
@@ -826,6 +867,7 @@ function openRunDialog() {
     return;
   }
   selectedModelIds.value = [];
+  selectedJudgeModelIds.value = {};
   error.value = '';
   notice.value = '';
   runDialogOpen.value = true;
@@ -891,17 +933,34 @@ async function createRun() {
     toast.add({ severity: 'warn', summary: '请选择模型', detail: '启动评测前需要至少选择一个模型。', life: 4000 });
     return;
   }
+  if (selectedBenchmarkRequiresJudge.value) {
+    syncJudgeSelections();
+    if (selectedModelsMissingJudge.value.length) {
+      const missingNames = selectedModelsMissingJudge.value.map(modelNameById).join('、');
+      toast.add({
+        severity: 'warn',
+        summary: '请选择 Judge 模型',
+        detail: `${missingNames} 需要选择最近一次测试通过且不同于自身的 Judge 模型。`,
+        life: 6000,
+      });
+      return;
+    }
+  }
   runCreateLoading.value = true;
   error.value = '';
   notice.value = '';
   const benchmarkName = benchmarkSetNameById(selectedBenchmarkSetId.value);
   const selectedModelNames = selectedModelIds.value.map(modelNameById).join('、');
+  const judgeModelConfigIds = Object.fromEntries(
+    selectedModelIds.value.map((modelId) => [modelId, selectedJudgeModelIds.value[modelId]]),
+  );
   try {
     const createdRuns = await api<EvaluationRun[]>('/api/evaluation-runs', {
       method: 'POST',
       body: JSON.stringify({
         benchmarkSetId: selectedBenchmarkSetId.value,
         modelConfigIds: selectedModelIds.value,
+        judgeModelConfigIds: selectedBenchmarkRequiresJudge.value ? judgeModelConfigIds : {},
       }),
     });
     const firstRun = createdRuns[0];
@@ -912,7 +971,7 @@ async function createRun() {
     detailResultsRequestId.value = requestId;
     detailRunId.value = firstRun.id;
     detailResultsLoading.value = true;
-    expandedResultRows.value = {};
+    selectedResultRecord.value = null;
     activeTab.value = 'runs';
     runDialogOpen.value = false;
     toast.add({
@@ -941,7 +1000,7 @@ function openRunDetails(runId: number) {
   const requestId = detailResultsRequestId.value + 1;
   detailResultsRequestId.value = requestId;
   detailRunId.value = runId;
-  expandedResultRows.value = {};
+  selectedResultRecord.value = null;
   detailResultsLoading.value = true;
   error.value = '';
   window.setTimeout(() => {
@@ -967,7 +1026,7 @@ function closeRunDetails() {
   detailResultsRequestId.value += 1;
   detailRunId.value = null;
   detailResultsLoading.value = false;
-  expandedResultRows.value = {};
+  selectedResultRecord.value = null;
   retryingResultIds.value = new Set();
 }
 
@@ -988,12 +1047,48 @@ async function stopRun(runId: number) {
   });
 }
 
-function toggleResultRecord(resultId: number) {
-  expandedResultRows.value = expandedResultRows.value[resultId] ? {} : { [resultId]: true };
+function openResultRecord(result: EvaluationResult) {
+  selectedResultRecord.value = result;
+}
+
+function closeResultRecord() {
+  selectedResultRecord.value = null;
+}
+
+function openJsonRecordDialog(title: string, payload: unknown) {
+  jsonRecordDialog.value = { title, payload };
+}
+
+function closeJsonRecordDialog() {
+  jsonRecordDialog.value = null;
+}
+
+function formatJson(value: unknown) {
+  return JSON.stringify(value ?? null, null, 2);
+}
+
+function modelRequestPayload(result: EvaluationResult) {
+  return {
+    prompt: result.prompt,
+    raw_response: result.rawResponse,
+  };
+}
+
+function judgeRequestPayload(result: EvaluationResult) {
+  return {
+    prompt: result.judgePrompt,
+    raw_response: result.judgeRawResponse,
+  };
+}
+
+function showQuestionPopover(event: Event, result: EvaluationResult) {
+  questionPopoverResult.value = result;
+  questionPopover.value?.toggle(event);
 }
 
 function canRetryResult(result: EvaluationResult) {
   if (retryingResultIds.value.has(result.id)) return false;
+  if (result.status === 'judge_failed') return true;
   if (result.status === 'failed') return true;
   return result.status === 'completed' && result.modelAnswer !== null && !(result.extractedAnswer ?? '').trim();
 }
@@ -1013,8 +1108,8 @@ async function retryResult(result: EvaluationResult) {
       [updated.evaluationRunId]: rows.map((row) => (row.id === updated.id ? updated : row)),
     };
     toast.add({
-      severity: updated.status === 'failed' ? 'error' : 'success',
-      summary: updated.status === 'failed' ? '重试失败' : '重试完成',
+      severity: ['failed', 'judge_failed'].includes(updated.status) ? 'error' : 'success',
+      summary: ['failed', 'judge_failed'].includes(updated.status) ? '重试失败' : '重试完成',
       detail: `${updated.modelName || `模型 #${updated.modelConfigId}`} · 结果 #${updated.id}`,
       life: 5000,
     });
@@ -1059,9 +1154,67 @@ function modelNameById(modelId: number) {
   return models.value.find((model) => model.id === modelId)?.name ?? `模型 #${modelId}`;
 }
 
+function modelProviderTextById(modelId: number | null) {
+  if (!modelId) return '';
+  const model = models.value.find((item) => item.id === modelId);
+  return model ? providerLabel(model.provider) : '';
+}
+
 function benchmarkSetNameById(setId: number | null) {
   if (!setId) return '未选择题集';
   return benchmarkSets.value.find((set) => set.id === setId)?.name ?? `题集 #${setId}`;
+}
+
+function judgeModelOptionsFor(modelId: number) {
+  return judgeModels.value.filter((model) => model.id !== modelId);
+}
+
+function defaultJudgeModelIdFor(modelId: number) {
+  const options = judgeModelOptionsFor(modelId);
+  return (
+    options.find((model) => model.provider === 'ant_ling' && model.model === 'AntAngelMed')?.id
+    ?? options.find((model) => model.provider === 'ant_ling')?.id
+    ?? options.find((model) => model.provider === 'deepseek')?.id
+    ?? options[0]?.id
+    ?? null
+  );
+}
+
+function syncJudgeSelections() {
+  const next: Record<number, number | null> = {};
+  for (const modelId of selectedModelIds.value) {
+    const current = selectedJudgeModelIds.value[modelId] ?? null;
+    const options = judgeModelOptionsFor(modelId);
+    next[modelId] = current && options.some((model) => model.id === current) ? current : defaultJudgeModelIdFor(modelId);
+  }
+  selectedJudgeModelIds.value = next;
+}
+
+function toggleRunModel(modelId: number) {
+  const next = selectedModelIds.value.includes(modelId)
+    ? selectedModelIds.value.filter((id) => id !== modelId)
+    : [...selectedModelIds.value, modelId];
+  selectedModelIds.value = next;
+  syncJudgeSelections();
+}
+
+function selectedJudgeModelId(modelId: number) {
+  return selectedJudgeModelIds.value[modelId] ?? null;
+}
+
+function setSelectedJudgeModelId(modelId: number, judgeModelId: number | null) {
+  selectedJudgeModelIds.value = {
+    ...selectedJudgeModelIds.value,
+    [modelId]: judgeModelId,
+  };
+}
+
+function isModelTestSuccessful(model: ModelConfig) {
+  return (modelTestStates.value[model.id]?.status ?? model.lastTestStatus) === 'success';
+}
+
+function modelTestTooltip(model: ModelConfig) {
+  return isModelTestSuccessful(model) ? '模型测试通过' : '模型测试未通过';
 }
 
 function modelScoreStatus(score: ModelScore) {
@@ -1085,6 +1238,7 @@ function modelScoreTagSeverity(score: ModelScore) {
 
 function runStatusTagSeverity(status: string) {
   if (status === 'failed') return 'danger';
+  if (status === 'judge_failed') return 'warn';
   if (status === 'running' || status === 'pending') return 'info';
   if (status === 'stopped') return 'warn';
   if (status === 'completed') return 'success';
@@ -1097,6 +1251,7 @@ function formatStatus(value: string) {
     running: '运行中',
     completed: '完成',
     failed: '失败',
+    judge_failed: '评分失败',
     stopped: '已结束',
   };
   return labels[value] ?? value;
@@ -1109,6 +1264,20 @@ function statusBadgeClass(value: string) {
 
 function formatOptionalStatus(value: string | null) {
   return value ? formatStatus(value) : '-';
+}
+
+function formatJudgeStatus(value: string | null) {
+  if (!value) return '-';
+  const labels: Record<string, string> = {
+    completed: '评分完成',
+    failed: '评分失败',
+  };
+  return labels[value] ?? value;
+}
+
+function formatQuestionPreview(result: EvaluationResult | null) {
+  if (!result) return '暂无题目';
+  return [result.question, result.options].filter((value) => value && value.trim()).join('\n\n');
 }
 
 function formatDateTime(value: string | null) {
@@ -1304,7 +1473,6 @@ function onTabChange(event: TabChangeEvent) {
       <div class="section-head">
         <div>
           <h2>模型配置</h2>
-          <p>API key 仅保存在后端，页面只显示脱敏值。</p>
         </div>
         <button type="button" @click="openCreateModelDialog">新增模型</button>
       </div>
@@ -1481,6 +1649,7 @@ function onTabChange(event: TabChangeEvent) {
             <th>ID</th>
             <th>题集</th>
             <th>模型</th>
+            <th>Judge 模型</th>
             <th>评测状态</th>
             <th>进度</th>
             <th>得分</th>
@@ -1492,6 +1661,7 @@ function onTabChange(event: TabChangeEvent) {
             <td>#{{ run.id }}</td>
             <td>{{ run.benchmarkSetName || run.benchmarkSetId }}</td>
             <td>{{ run.modelNames.length ? run.modelNames.join('、') : '-' }}</td>
+            <td>{{ run.judgeModelName || '-' }}</td>
             <td>
               <span :class="statusBadgeClass(run.status)">{{ formatStatus(run.status) }}</span>
             </td>
@@ -1506,7 +1676,7 @@ function onTabChange(event: TabChangeEvent) {
             </td>
           </tr>
           <tr v-if="!runs.length">
-            <td colspan="7" class="empty">暂无评测运行</td>
+            <td colspan="8" class="empty">暂无评测运行</td>
           </tr>
         </tbody>
       </table>
@@ -1639,6 +1809,8 @@ function onTabChange(event: TabChangeEvent) {
           <h2>评测明细 #{{ detailRun?.id ?? detailRunId }}</h2>
           <div v-if="detailRun" class="modal-subhead">
             <span>{{ detailRun.benchmarkSetName || detailRun.benchmarkSetId }}</span>
+            <span>模型：{{ detailRun.modelNames.length ? detailRun.modelNames.join('、') : '-' }}</span>
+            <span>Judge：{{ detailRun.judgeModelName || '-' }}</span>
             <span :class="statusBadgeClass(detailRun.status)">评测状态：{{ formatStatus(detailRun.status) }}</span>
           </div>
         </div>
@@ -1699,7 +1871,6 @@ function onTabChange(event: TabChangeEvent) {
 
         <DataTable
           v-else
-          v-model:expanded-rows="expandedResultRows"
           :value="resultsForRun(detailRun.id)"
           data-key="id"
           paginator
@@ -1714,23 +1885,23 @@ function onTabChange(event: TabChangeEvent) {
         >
           <Column field="questionSourceRow" header="题号" style="min-width: 80px">
             <template #body="{ data }">
-              #{{ data.questionSourceRow ?? data.benchmarkQuestionId ?? data.id }}
+              <div class="question-number-cell">
+                <span>#{{ data.questionSourceRow ?? data.benchmarkQuestionId ?? data.id }}</span>
+                <Button
+                  icon="pi pi-info-circle"
+                  text
+                  rounded
+                  severity="secondary"
+                  size="small"
+                  aria-label="查看题目"
+                  @click="showQuestionPopover($event, data)"
+                />
+              </div>
             </template>
           </Column>
           <Column field="modelName" header="模型" style="min-width: 150px">
             <template #body="{ data }">
               {{ data.modelName || data.modelConfigId }}
-            </template>
-          </Column>
-          <Column field="question" header="题目" style="min-width: 320px">
-            <template #body="{ data }">
-              <p class="detail-question">{{ data.question }}</p>
-            </template>
-          </Column>
-          <Column field="expectedAnswer" header="标准答案" style="min-width: 110px" />
-          <Column field="extractedAnswer" header="提取答案" style="min-width: 110px">
-            <template #body="{ data }">
-              {{ data.extractedAnswer || '-' }}
             </template>
           </Column>
           <Column field="status" header="评测状态" style="min-width: 110px">
@@ -1740,7 +1911,8 @@ function onTabChange(event: TabChangeEvent) {
           </Column>
           <Column field="isCorrect" header="结果" style="min-width: 100px">
             <template #body="{ data }">
-              <Tag v-if="data.isCorrect === true" severity="success" value="正确" />
+              <Tag v-if="data.status === 'judge_failed'" severity="warn" value="评分失败" />
+              <Tag v-else-if="data.score !== null" severity="success" :value="`${Number(data.score).toFixed(2)} / ${Number(data.maxScore).toFixed(2)}`" />
               <Tag v-else-if="data.isCorrect === false" severity="danger" value="错误" />
               <Tag v-else severity="secondary" value="待评测" />
             </template>
@@ -1754,11 +1926,11 @@ function onTabChange(event: TabChangeEvent) {
             <template #body="{ data }">
               <div class="row-actions">
                 <Button
-                  :label="expandedResultRows[data.id] ? '收起记录' : '查看记录'"
+                  label="查看记录"
                   severity="secondary"
                   outlined
                   size="small"
-                  @click="toggleResultRecord(data.id)"
+                  @click="openResultRecord(data)"
                 />
                 <Button
                   v-if="canRetryResult(data)"
@@ -1772,38 +1944,116 @@ function onTabChange(event: TabChangeEvent) {
               </div>
             </template>
           </Column>
-          <template #expansion="{ data }">
-            <div class="record-panel">
-              <Panel header="发送给模型的内容" toggleable>
-                <pre>{{ data.prompt }}</pre>
-              </Panel>
-              <Panel header="AI 回复" toggleable>
-                <pre>{{ data.modelAnswer || '暂无回复' }}</pre>
-              </Panel>
-              <Panel v-if="data.errorMessage" header="错误信息" toggleable>
-                <pre>{{ data.errorMessage }}</pre>
-              </Panel>
-              <div class="record-grid">
-                <div>
-                  <span>标准答案</span>
-                  <strong>{{ data.expectedAnswer }}</strong>
-                </div>
-                <div>
-                  <span>提取答案</span>
-                  <strong>{{ data.extractedAnswer || '-' }}</strong>
-                </div>
-                <div>
-                  <span>题目类型</span>
-                  <strong>{{ questionTypeLabel(data.questionType) }}</strong>
-                </div>
-              </div>
-            </div>
-          </template>
           <template #empty>
             <div class="empty">暂无明细</div>
           </template>
         </DataTable>
+        <Popover ref="questionPopover" class="question-popover">
+          <div class="question-popover-content">
+            <p>{{ formatQuestionPreview(questionPopoverResult) }}</p>
+          </div>
+        </Popover>
       </div>
+    </Dialog>
+
+    <Dialog
+      :visible="selectedResultRecord !== null"
+      modal
+      class="app-dialog result-record-dialog"
+      header="问答记录"
+      :style="{ width: 'min(920px, calc(100vw - 32px))' }"
+      @update:visible="(visible) => { if (!visible) closeResultRecord(); }"
+    >
+      <div v-if="selectedResultRecord" class="record-panel record-dialog-panel">
+        <div class="record-grid">
+          <div>
+            <span>题号</span>
+            <strong>#{{ selectedResultRecord.questionSourceRow ?? selectedResultRecord.benchmarkQuestionId ?? selectedResultRecord.id }}</strong>
+          </div>
+          <div>
+            <span>模型</span>
+            <strong>{{ selectedResultRecord.modelName || selectedResultRecord.modelConfigId }}</strong>
+          </div>
+          <div>
+            <span>题目类型</span>
+            <strong>{{ questionTypeLabel(selectedResultRecord.questionType) }}</strong>
+          </div>
+          <div>
+            <span>评测状态</span>
+            <strong>{{ formatStatus(selectedResultRecord.status) }}</strong>
+          </div>
+          <div>
+            <span>得分</span>
+            <strong>{{ selectedResultRecord.score !== null ? `${Number(selectedResultRecord.score).toFixed(2)} / ${Number(selectedResultRecord.maxScore).toFixed(2)}` : '-' }}</strong>
+          </div>
+          <div v-if="selectedResultRecord.judgeModelConfigId">
+            <span>Judge 模型</span>
+            <strong>{{ selectedResultRecord.judgeModelConfigId ? modelNameById(selectedResultRecord.judgeModelConfigId) : '-' }}</strong>
+          </div>
+          <div v-if="selectedResultRecord.judgeModelConfigId">
+            <span>Judge 状态</span>
+            <strong>{{ formatJudgeStatus(selectedResultRecord.judgeStatus) }}</strong>
+          </div>
+          <div v-if="selectedResultRecord.judgeModelConfigId">
+            <span>Judge 得分比例</span>
+            <strong>{{ selectedResultRecord.judgeScoreRatio !== null ? Number(selectedResultRecord.judgeScoreRatio).toFixed(2) : '-' }}</strong>
+          </div>
+        </div>
+        <Panel header="题目">
+          <pre>{{ selectedResultRecord.question || '暂无题目' }}</pre>
+        </Panel>
+        <Panel header="标准答案">
+          <pre>{{ selectedResultRecord.expectedAnswer }}</pre>
+        </Panel>
+        <Panel>
+          <template #header>
+            <div class="record-panel-header">
+              <span>AI 回复</span>
+              <Button
+                icon="pi pi-code"
+                text
+                rounded
+                severity="secondary"
+                size="small"
+                aria-label="查看模型原始请求和响应"
+                @click="openJsonRecordDialog('模型调用 JSON', modelRequestPayload(selectedResultRecord))"
+              />
+            </div>
+          </template>
+          <pre>{{ selectedResultRecord.modelAnswer || '暂无回复' }}</pre>
+        </Panel>
+        <Panel v-if="selectedResultRecord.judgeReason">
+          <template #header>
+            <div class="record-panel-header">
+              <span>Judge 评分理由</span>
+              <Button
+                icon="pi pi-code"
+                text
+                rounded
+                severity="secondary"
+                size="small"
+                aria-label="查看 Judge 原始请求和响应"
+                @click="openJsonRecordDialog('Judge 调用 JSON', judgeRequestPayload(selectedResultRecord))"
+              />
+            </div>
+          </template>
+          <pre>{{ selectedResultRecord.judgeReason }}</pre>
+        </Panel>
+        <Panel v-if="selectedResultRecord.errorMessage" header="错误信息">
+          <pre>{{ selectedResultRecord.errorMessage }}</pre>
+        </Panel>
+      </div>
+    </Dialog>
+
+    <Dialog
+      :visible="jsonRecordDialog !== null"
+      modal
+      class="app-dialog json-record-dialog"
+      :header="jsonRecordDialog?.title || 'JSON'"
+      :style="{ width: 'min(900px, calc(100vw - 32px))' }"
+      @update:visible="(visible) => { if (!visible) closeJsonRecordDialog(); }"
+    >
+      <pre class="json-record-content">{{ formatJson(jsonRecordDialog?.payload) }}</pre>
     </Dialog>
 
     <Dialog
@@ -1924,7 +2174,7 @@ function onTabChange(event: TabChangeEvent) {
           <template #option="{ option }">
             <div class="select-option-stack">
               <strong>{{ option.name }}</strong>
-              <small>{{ option.category }} · {{ option.modality }} · {{ option.questionCount }} 题</small>
+              <small>{{ option.category }} · {{ option.modality }} · {{ option.questionCount }} 题 · {{ option.requiresJudge ? '问答题需 Judge' : '选择题无需 Judge' }}</small>
             </div>
           </template>
           <template #value="{ value }">
@@ -1933,19 +2183,69 @@ function onTabChange(event: TabChangeEvent) {
         </Select>
       </label>
 
-      <div class="modal-list">
-        <label v-for="model in runnableModels" :key="model.id" class="modal-model-row">
-          <Checkbox
-            v-model="selectedModelIds"
-            :disabled="runCreateLoading"
-            :input-id="`run-model-${model.id}`"
-            :value="model.id"
-          />
-          <span>
-            <strong>{{ model.name }}</strong>
-            <small>{{ providerLabel(model.provider) }} · {{ model.model }}</small>
-          </span>
-        </label>
+      <div class="modal-list run-model-list">
+        <div v-for="model in runnableModels" :key="model.id" class="modal-model-row run-model-row">
+          <div class="run-model-main">
+            <Checkbox
+              :model-value="selectedModelIds.includes(model.id)"
+              :disabled="runCreateLoading"
+              :input-id="`run-model-${model.id}`"
+              binary
+              @update:model-value="toggleRunModel(model.id)"
+            />
+            <label :for="`run-model-${model.id}`">
+              <strong>{{ model.name }}</strong>
+              <small>{{ providerLabel(model.provider) }}</small>
+            </label>
+          </div>
+          <div class="run-model-status">
+            <span
+              v-tooltip.top="modelTestTooltip(model)"
+              :class="['run-test-icon', isModelTestSuccessful(model) ? 'ok' : 'bad']"
+              :aria-label="modelTestTooltip(model)"
+            >
+              <i :class="isModelTestSuccessful(model) ? 'pi pi-check' : 'pi pi-times'" aria-hidden="true"></i>
+            </span>
+            <small v-if="modelTestLatency(model)" class="cell-subtle">{{ modelTestLatency(model) }}ms</small>
+            <Button
+              :icon="isModelTesting(model.id) ? 'pi pi-spin pi-spinner' : 'pi pi-refresh'"
+              severity="secondary"
+              text
+              rounded
+              size="small"
+              :aria-label="isModelTesting(model.id) ? '模型测试中' : '测试模型'"
+              :disabled="runCreateLoading || isModelTesting(model.id)"
+              @click="testModel(model.id)"
+            />
+          </div>
+          <label
+            v-if="selectedBenchmarkRequiresJudge && selectedModelIds.includes(model.id)"
+            class="form-field run-judge-field"
+          >
+            <Select
+              class="run-judge-select"
+              :model-value="selectedJudgeModelId(model.id)"
+              :options="judgeModelOptionsFor(model.id)"
+              option-label="name"
+              option-value="id"
+              placeholder="请选择最近一次测试通过的模型"
+              :disabled="runCreateLoading"
+              fluid
+              @update:model-value="(value) => setSelectedJudgeModelId(model.id, value)"
+            >
+              <template #option="{ option }">
+                <div class="select-option-stack">
+                  <strong>{{ option.name }}</strong>
+                  <small>{{ providerLabel(option.provider) }}</small>
+                </div>
+              </template>
+              <template #value="{ value }">
+                <span>{{ value ? `${modelNameById(value)} · ${modelProviderTextById(value)}` : '请选择最近一次测试通过的模型' }}</span>
+              </template>
+            </Select>
+          </label>
+          <div v-else class="run-judge-placeholder"></div>
+        </div>
       </div>
 
       <template #footer>
@@ -1953,7 +2253,7 @@ function onTabChange(event: TabChangeEvent) {
           <Button label="取消" severity="secondary" outlined :disabled="runCreateLoading" @click="closeRunDialog" />
           <Button
             :label="runCreateLoading ? '启动中' : '确认启动'"
-            :disabled="runCreateLoading || !selectedModelIds.length"
+            :disabled="!canSubmitRun"
             @click="createRun"
           />
         </div>

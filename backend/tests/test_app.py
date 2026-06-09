@@ -3,9 +3,9 @@ import pytest
 
 from app.database import _database_url
 from app.evaluation_runner import PROGRESS_COMPLETED_STATUSES
-from app.main import _capability_values, _model_score_out, app
-from app.models import ModelConfig
-from app.scoring import normalize_choice
+from app.main import _capability_values, _model_score_out, _result_is_retryable, app
+from app.models import BenchmarkQuestion, EvaluationResult, ModelConfig
+from app.scoring import normalize_choice, score_answer
 from app.schemas import ModelConfigCreate, ModelConfigUpdate
 
 
@@ -71,6 +71,16 @@ def test_choice_answer_extraction():
     assert normalize_choice("选项：D") == "D"
 
 
+def test_choice_scoring_uses_question_max_score():
+    question = BenchmarkQuestion(question_type="choice", answer="B", max_score=2.5)
+
+    extracted, correct, score = score_answer(question, "答案是 B。")
+
+    assert extracted == "B"
+    assert correct is True
+    assert score == 2.5
+
+
 def test_capability_values_parse_multiple_capabilities():
     assert _capability_values("text,vision") == {"text", "vision"}
     assert _capability_values(" text , vision , ") == {"text", "vision"}
@@ -118,7 +128,24 @@ def test_model_score_out_includes_unevaluated_model():
     assert score.accuracy == 0.0
 
 
+def test_result_is_retryable_for_judge_failed():
+    assert _result_is_retryable(EvaluationResult(status="judge_failed")) is True
+
+
+def test_result_is_retryable_for_completed_without_extracted_answer():
+    result = EvaluationResult(status="completed", model_answer="模型回答", extracted_answer="")
+
+    assert _result_is_retryable(result) is True
+
+
+def test_result_is_not_retryable_for_successful_completed_result():
+    result = EvaluationResult(status="completed", model_answer="模型回答", extracted_answer="A")
+
+    assert _result_is_retryable(result) is False
+
+
 def test_stopped_results_do_not_count_as_progress_completed():
     assert "completed" in PROGRESS_COMPLETED_STATUSES
     assert "failed" in PROGRESS_COMPLETED_STATUSES
+    assert "judge_failed" in PROGRESS_COMPLETED_STATUSES
     assert "stopped" not in PROGRESS_COMPLETED_STATUSES

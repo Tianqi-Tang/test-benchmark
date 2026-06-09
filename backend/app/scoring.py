@@ -24,26 +24,35 @@ def normalize_choice(value: str | None) -> str:
     return stripped[:1] if stripped[:1] in {"A", "B", "C", "D", "E"} else ""
 
 
-def extract_answer(question: BenchmarkQuestion, model_answer: str | None) -> str:
-    if question.question_type == "choice":
-        return normalize_choice(model_answer)
-    return (model_answer or "").strip()
-
-
 def score_answer(question: BenchmarkQuestion, model_answer: str | None) -> tuple[str, bool | None, float | None]:
-    extracted = extract_answer(question, model_answer)
-    expected = question.answer.strip()
+    return score_text_answer(
+        question.question_type,
+        question.answer,
+        model_answer,
+        question.max_score,
+    )
 
-    if question.question_type == "choice":
-        correct = normalize_choice(expected) == extracted
-        return extracted, correct, 1.0 if correct else 0.0
 
+def score_text_answer(
+    question_type: str,
+    expected_answer: str,
+    model_answer: str | None,
+    max_score: float | None = 1.0,
+) -> tuple[str, bool | None, float | None]:
+    full_score = 1.0 if max_score is None else float(max_score)
+    if question_type == "choice":
+        extracted = normalize_choice(model_answer)
+        correct = normalize_choice(expected_answer) == extracted
+        return extracted, correct, full_score if correct else 0.0
+
+    extracted = (model_answer or "").strip()
+    expected = expected_answer.strip()
     normalized_expected = normalize_text(expected)
     normalized_actual = normalize_text(extracted)
     if not normalized_expected or not normalized_actual:
         return extracted, False, 0.0
     if normalized_expected == normalized_actual:
-        return extracted, True, 1.0
+        return extracted, True, full_score
     if len(normalized_expected) <= 80 and normalized_expected in normalized_actual:
-        return extracted, True, 1.0
+        return extracted, True, full_score
     return extracted, None, None

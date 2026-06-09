@@ -33,7 +33,10 @@ class ModelConfig(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
-    results: Mapped[List["EvaluationResult"]] = relationship(back_populates="model_config")
+    results: Mapped[List["EvaluationResult"]] = relationship(
+        back_populates="model_config",
+        foreign_keys="EvaluationResult.model_config_id",
+    )
 
 
 class BenchmarkSet(Base):
@@ -69,6 +72,7 @@ class BenchmarkQuestion(Base):
     question: Mapped[str] = mapped_column(Text)
     options: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     answer: Mapped[str] = mapped_column(Text)
+    max_score: Mapped[float] = mapped_column(Float, default=1.0)
     raw: Mapped[Dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -81,6 +85,7 @@ class EvaluationRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     benchmark_set_id: Mapped[int] = mapped_column(ForeignKey("benchmark_sets.id", ondelete="CASCADE"), index=True)
+    judge_model_config_id: Mapped[Optional[int]] = mapped_column(ForeignKey("model_configs.id", ondelete="SET NULL"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
     total_count: Mapped[int] = mapped_column(Integer, default=0)
     completed_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -92,6 +97,7 @@ class EvaluationRun(Base):
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     benchmark_set: Mapped["BenchmarkSet"] = relationship(back_populates="runs")
+    judge_model_config: Mapped[Optional["ModelConfig"]] = relationship(foreign_keys=[judge_model_config_id])
     results: Mapped[List["EvaluationResult"]] = relationship(
         back_populates="run",
         cascade="all, delete-orphan",
@@ -111,10 +117,16 @@ class EvaluationResult(Base):
     status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
     prompt: Mapped[str] = mapped_column(Text)
     expected_answer: Mapped[str] = mapped_column(Text)
+    max_score: Mapped[float] = mapped_column(Float, default=1.0)
     model_answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     extracted_answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_correct: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    judge_model_config_id: Mapped[Optional[int]] = mapped_column(ForeignKey("model_configs.id", ondelete="SET NULL"), nullable=True, index=True)
+    judge_status: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    judge_score_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    judge_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    judge_raw_response: Mapped[Optional[Dict]] = mapped_column(JSONB, nullable=True)
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     raw_response: Mapped[Optional[Dict]] = mapped_column(JSONB, nullable=True)
@@ -122,5 +134,6 @@ class EvaluationResult(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     run: Mapped["EvaluationRun"] = relationship(back_populates="results")
-    model_config: Mapped["ModelConfig"] = relationship(back_populates="results")
+    model_config: Mapped["ModelConfig"] = relationship(back_populates="results", foreign_keys=[model_config_id])
+    judge_model_config: Mapped[Optional["ModelConfig"]] = relationship(foreign_keys=[judge_model_config_id])
     question: Mapped["BenchmarkQuestion"] = relationship(back_populates="results")

@@ -102,6 +102,14 @@ storage/benchmark-assets/{benchmarkSetId}/{importBatchId}/...
 4. 部署：Docker Compose、GitHub Actions、测试环境 nginx 路由。
 5. 验证：后端测试、前端构建、本地 Docker stack。
 
+## Frontend UI Rules
+
+- 前端已使用 PrimeVue；新增或替换交互控件时优先使用 PrimeVue 组件，例如 `Button`、`Dialog`、`Select`、`Tag`、`Popover`，不要用原生 `button` 加临时样式凑合。
+- 图标按钮使用 PrimeVue `Button` 的 `icon`、`text`、`rounded`、`severity`、`size` 等属性；不要手写孤立 icon button，除非已有组件无法满足。
+- 短提示可以使用 PrimeVue Tooltip；题目、答案、记录、错误等长内容必须使用 Popover 或 Dialog，不能依赖浏览器原生 `title`。
+- 列表页优先展示可扫描字段；长文本内容放到 Popover、Dialog 或详情页中查看。
+- 新增弹窗和按钮时要和现有 PrimeVue 风格一致，操作按钮需要明确区分普通、警告和危险操作。
+
 ## 本地开发命令
 
 ```bash

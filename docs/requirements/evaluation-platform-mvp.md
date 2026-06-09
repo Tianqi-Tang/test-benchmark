@@ -35,6 +35,7 @@
 - [x] 后端逐题调用模型并保存回答、耗时、错误和评分结果。
 - [x] 前端结果页展示运行状态、进度、准确率和逐题明细。
 - [x] 前端通过轮询实现第一版实时更新。
+- [ ] 每次评测运行保存完整评测日志，便于排查模型调用、Judge 调用、重试和评分问题。
 
 ## 不在本期范围
 
@@ -114,17 +115,17 @@ correct = expected == actual
 评分规则：
 
 - 选择题仍使用规则评分，不调用 LLM Judge。
-- 问答题由 LLM Judge 输出结构化评分结果。
-- Judge 只允许依据题目、标准答案和被评测模型回答评分。
+- 问答题由 LLM Judge 输出可解析评分结果。
+- Judge 只允许依据标准答案和被评测模型回答评分，不向 Judge 发送原始题目。
 - 等价表达不扣分。
 - 医学事实错误、遗漏关键风险点或给出危险建议必须扣分。
 - 差异很大、无法和标准答案建立等价或部分等价关系时，直接给 `0` 分。
 - Judge 输出分值比例 `score_ratio`，范围 `0.0` 到 `1.0`；后端按 `score = max_score * score_ratio` 保存得分。
-- Judge 输出必须可解析为 JSON，解析失败时本题评分失败，不硬猜分数。
+- Judge 优先输出 JSON；考虑 AntAngelMed 等医疗模型不支持 tools 或强结构化返回，后端也需要兼容包含 `score_ratio` 和 `reason` 的纯文本格式。JSON 和文本格式都无法解析时，本题评分失败，不硬猜分数。
 
 Judge 模型选择：
 
-- 默认 Judge 使用最近一次测试通过的 DeepSeek 模型配置。
+- 默认 Judge 优先使用最近一次测试通过的 AntAngelMed（安诊儿）模型配置；没有可用 AntAngelMed 时再使用 DeepSeek 或其他最近一次测试通过的文本模型。
 - 用户启动评测时，在每个被评测模型后面单独选择该模型使用的 Judge 模型。
 - 每个被评测模型只能选择一个 Judge 模型。
 - Judge 模型不能和当前被评测模型相同。
@@ -139,7 +140,8 @@ Judge 模型选择：
 - 被评测模型请求成功但答错的题目计入分母，得 `0` 分。
 - 选择题正确得满分，错误得 0 分。
 - 问答题按 Judge 返回的 `score_ratio` 计算得分。
-- Judge 调用失败属于评分失败，需要在明细中明确展示；是否计入分母按请求失败类型区分，不能和被评测模型请求失败混淆。
+- Judge 调用失败属于评分失败，需要在明细中明确展示，不计入当前得分分母，不能和被评测模型请求失败混淆。
+- 评分失败的题目允许重试。若已有被评测模型回答，重试时只重新调用 Judge；若没有被评测模型回答，重试时先重新调用被评测模型，再调用 Judge。
 
 后续 Judge rubric 需要参考以下医学问答评测维度：
 
@@ -223,6 +225,121 @@ Judge 模型选择：
 - `created_at`
 - `updated_at`
 
+## 完整评测日志方案
+
+评测结果表只保存页面展示和统计所需字段，不适合保存所有调用过程日志。完整评测日志采用服务器文件存储，按评测运行分目录保存，避免数据库持续膨胀，也便于后续按运行清理。
+
+### 存储位置
+
+```text
+storage/evaluation-logs/{evaluationRunId}/events.jsonl
+```
+
+规则：
+
+- `storage/evaluation-logs/` 不提交仓库。
+- 每个评测运行一个日志目录，主日志文件为 `events.jsonl`。
+- 每行是一条 JSON 事件，按发生时间追加写入。
+- 删除评测运行时，默认同步删除该运行的日志目录。
+- 后续如出现超大原始响应，可扩展为 `artifacts/` 子目录保存大对象，`events.jsonl` 只保存相对路径。
+
+### 日志事件范围
+
+需要记录以下事件：
+
+- `run.started`：评测运行开始。
+- `run.completed` / `run.failed` / `run.stopped`：评测运行结束状态。
+- `result.started`：单题开始评测。
+- `llm.request`：调用被评测模型前的请求信息。
+- `llm.response`：被评测模型返回后的响应、耗时和解析结果。
+- `llm.failed`：被评测模型调用失败。
+- `choice.scored`：选择题规则评分结果。
+- `judge.request`：调用 Judge 模型前的请求信息。
+- `judge.response`：Judge 返回后的响应、解析结果、得分比例和理由。
+- `judge.failed`：Judge 调用或解析失败。
+- `result.completed` / `result.failed` / `result.judge_failed`：单题最终状态。
+- `result.retry_requested`：用户手动重试单题。
+
+### 单条日志字段
+
+每条日志至少包含：
+
+- `timestamp`
+- `event`
+- `run_id`
+- `result_id`
+- `question_id`
+- `question_source_row`
+- `model_config_id`
+- `model_name`
+- `provider`
+- `model`
+- `judge_model_config_id`
+- `judge_model_name`
+- `status`
+- `latency_ms`
+- `attempt`
+- `score`
+- `score_ratio`
+- `error`
+- `payload`
+
+`payload` 用于保存事件相关的完整上下文，例如：
+
+- 发给模型的 prompt 或 provider 请求体。
+- 模型原始响应。
+- 从响应中提取出的文本答案。
+- Judge prompt 或请求体。
+- Judge 原始响应、解析出的 JSON 或文本评分。
+- 选择题抽取出的选项和标准答案。
+
+### 敏感信息规则
+
+- 不允许把 API key、鉴权 cookie、Authorization header 或其他密钥写入日志。
+- 请求日志只能保存经过脱敏后的 provider 请求体。
+- 如果后续题集包含真实患者隐私数据，需要在导入和日志查看前增加更严格的脱敏或访问控制；当前测试环境先按登录后可查看处理。
+- 日志文件只能通过后端鉴权 API 查看，不能由 nginx 或静态文件服务直接暴露 `storage/` 目录。
+
+### API 入口
+
+评测日志先提供运行级查看接口：
+
+- `GET /api/evaluation-runs/{id}/logs`
+
+返回内容：
+
+- 默认返回最近若干条日志，避免一次加载超大文件。
+- 支持 `limit`、`offset` 或 `cursor` 参数翻页。
+- 支持按 `result_id`、`event` 过滤。
+
+后续可按需要增加下载接口：
+
+- `GET /api/evaluation-runs/{id}/logs/download`
+
+下载接口只允许已登录用户访问，并返回该运行的 `events.jsonl`。
+
+### 前端查看方式
+
+- 评测运行列表增加“日志”入口。
+- 评测明细弹窗顶部也提供“查看日志”入口。
+- 日志使用弹窗异步加载，不等待日志请求完成再打开弹窗。
+- 日志列表默认按时间倒序或顺序展示，至少显示时间、事件、题号、模型、状态、耗时和错误摘要。
+- 单条日志可展开查看 JSON 详情。
+- 如果日志文件不存在，应显示“暂无日志”，不能影响评测结果页面展示。
+
+### 写入和可靠性
+
+- 写日志失败不能中断评测运行，但需要写入后端应用日志，便于排查日志系统自身问题。
+- 文件写入需要保证追加写入的单行 JSON 完整；后续并发评测增强时应使用线程锁或队列串行写入。
+- 单题重试时继续追加到同一个运行日志文件，并通过 `attempt` 或 `event` 区分。
+- 日志时间统一使用 UTC ISO8601。
+
+### 清理策略
+
+- 删除评测运行时删除对应 `storage/evaluation-logs/{evaluationRunId}/`。
+- 后续可增加按时间或磁盘占用清理日志的后台命令。
+- 日志清理不能删除数据库中的评测结果；如果日志已清理，页面应明确显示“日志已清理或不存在”。
+
 ## API 草案
 
 ### Health
@@ -264,6 +381,8 @@ Judge 模型选择：
 - `GET /api/evaluation-runs`
 - `GET /api/evaluation-runs/{id}`
 - `GET /api/evaluation-runs/{id}/results`
+- `GET /api/evaluation-runs/{id}/logs`
+- `GET /api/evaluation-runs/{id}/logs/download`
 - `GET /api/dashboard/model-scores`，默认返回全部模型；未参与过评测的模型也要出现在看板中，并标记为未评测。
 
 ## 模型调用约束
@@ -281,6 +400,12 @@ Judge 模型选择：
 ## 文件存储约束
 
 第一版不评测图片，但数据模型和部署目录要预留 vision 资产管理。
+
+评测日志使用服务器文件存储：
+
+- 完整日志保存到 `storage/evaluation-logs/`。
+- 日志文件只通过后端鉴权 API 访问。
+- 日志目录和导入资产一样不提交仓库。
 
 后续 vision 导入时：
 
@@ -309,7 +434,10 @@ Judge 模型选择：
 - [x] A 场景：某个模型调用失败时，该模型对应结果记录错误，其他模型和题目继续执行。
 - [x] A 场景：重复导入同一 JSONL 文件不会造成题目无限重复。
 - [x] A 场景：结果看板默认显示所有模型，尚未参与评测的模型清楚标记为未评测。
+- [ ] A 场景：用户可以查看某次评测运行的完整日志，包括模型请求、模型响应、Judge 请求、Judge 响应、重试和错误事件。
+- [ ] A 场景：完整评测日志文件不存在或已被清理时，页面清楚提示，不影响评测结果查看。
 - [x] S 场景：前端任何接口都不会返回 API key 明文。
+- [ ] S 场景：完整评测日志不包含 API key、Authorization header、cookie 等密钥信息。
 - [ ] S 场景：测试环境访问模型配置、题集、评测和结果 API 前必须先登录，密码校验在后端完成。
 - [x] S 场景：后端运行依赖 PostgreSQL，Docker 本地和测试环境均配置 PostgreSQL。
 
@@ -320,3 +448,4 @@ Judge 模型选择：
 - 同一个题集导入后是否需要版本号。
 - 是否需要为每次评测保存 prompt 模板版本。
 - 多模型并发调用的默认并发数应是多少。
+- 完整评测日志保留周期和磁盘占用上限应如何配置。

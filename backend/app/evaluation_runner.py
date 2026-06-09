@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import logging
 from threading import Thread
 
 from sqlalchemy import func, select, update
 
 from .database import get_sessionmaker
+from .judging import judge_qa_answer
 from .llm import call_model
 from .models import BenchmarkQuestion, EvaluationResult, EvaluationRun, ModelConfig, utc_now
 from .prompt_builder import build_prompt
 from .scoring import score_answer
 
 
-PROGRESS_COMPLETED_STATUSES = ("completed", "failed")
+PROGRESS_COMPLETED_STATUSES = ("completed", "failed", "judge_failed")
+logger = logging.getLogger("uvicorn.error")
 
 
 def start_evaluation_run(run_id: int) -> None:
@@ -84,7 +87,13 @@ def run_evaluation(run_id: int) -> None:
             db.commit()
 
 
-def prepare_run_items(db, run: EvaluationRun, model_configs: list[ModelConfig], questions: list[BenchmarkQuestion]) -> None:
+def prepare_run_items(
+    db,
+    run: EvaluationRun,
+    model_configs: list[ModelConfig],
+    questions: list[BenchmarkQuestion],
+    judge_model_config_id: int | None = None,
+) -> None:
     for model_config in model_configs:
         for question in questions:
             prompt = build_prompt(question.question, question.options)
@@ -93,8 +102,10 @@ def prepare_run_items(db, run: EvaluationRun, model_configs: list[ModelConfig], 
                     evaluation_run_id=run.id,
                     model_config_id=model_config.id,
                     benchmark_question_id=question.id,
+                    judge_model_config_id=judge_model_config_id if question.question_type == "qa" else None,
                     prompt=prompt,
                     expected_answer=question.answer,
+                    max_score=question.max_score,
                     status="pending",
                 )
             )
@@ -106,35 +117,156 @@ def run_result_once(db, result: EvaluationResult) -> EvaluationResult:
     if model_config is None or question is None:
         result.status = "failed"
         result.error_message = "Model config or benchmark question no longer exists."
-        db.commit()
-        _refresh_run_progress(db, result.evaluation_run_id)
-        return result
+        return _finish_result_attempt(db, result)
 
+    should_call_model = not result.model_answer
+    _start_result_attempt(db, result, should_call_model)
+    if should_call_model:
+        if not _populate_model_answer(result, model_config):
+            return _finish_result_attempt(db, result)
+
+    if question.question_type == "choice":
+        _score_choice_result(result, question)
+    else:
+        _score_qa_result(db, result, model_config, question)
+
+    return _finish_result_attempt(db, result)
+
+
+def _start_result_attempt(db, result: EvaluationResult, should_call_model: bool) -> None:
     result.status = "running"
-    result.model_answer = None
+    if should_call_model:
+        result.model_answer = None
+        result.latency_ms = None
+        result.raw_response = None
     result.extracted_answer = None
     result.is_correct = None
     result.score = None
-    result.latency_ms = None
+    result.judge_status = None
+    result.judge_score_ratio = None
+    result.judge_reason = None
+    result.judge_raw_response = None
     result.error_message = None
-    result.raw_response = None
     db.commit()
 
+
+def _populate_model_answer(result: EvaluationResult, model_config: ModelConfig) -> bool:
+    logger.info(
+        "llm.call.start run_id=%s result_id=%s question_id=%s model_config_id=%s provider=%s model=%s",
+        result.evaluation_run_id,
+        result.id,
+        result.benchmark_question_id,
+        model_config.id,
+        model_config.provider,
+        model_config.model,
+    )
     llm_result = call_model(model_config, result.prompt)
     result.latency_ms = llm_result.latency_ms
     result.raw_response = llm_result.raw_response
 
     if llm_result.ok:
+        logger.info(
+            "llm.call.success run_id=%s result_id=%s question_id=%s model_config_id=%s provider=%s model=%s latency_ms=%s",
+            result.evaluation_run_id,
+            result.id,
+            result.benchmark_question_id,
+            model_config.id,
+            model_config.provider,
+            model_config.model,
+            llm_result.latency_ms,
+        )
         result.model_answer = llm_result.text
-        extracted, correct, score = score_answer(question, llm_result.text)
-        result.extracted_answer = extracted
-        result.is_correct = correct
-        result.score = score
-        result.status = "completed"
-    else:
-        result.status = "failed"
-        result.error_message = llm_result.error
+        return True
 
+    logger.warning(
+        "llm.call.failed run_id=%s result_id=%s question_id=%s model_config_id=%s provider=%s model=%s latency_ms=%s error=%r",
+        result.evaluation_run_id,
+        result.id,
+        result.benchmark_question_id,
+        model_config.id,
+        model_config.provider,
+        model_config.model,
+        llm_result.latency_ms,
+        llm_result.error,
+    )
+    result.status = "failed"
+    result.error_message = llm_result.error
+    return False
+
+
+def _score_choice_result(result: EvaluationResult, question: BenchmarkQuestion) -> None:
+    extracted, correct, score = score_answer(question, result.model_answer)
+    result.extracted_answer = extracted
+    result.is_correct = correct
+    result.score = score
+    result.status = "completed"
+
+
+def _score_qa_result(
+    db,
+    result: EvaluationResult,
+    model_config: ModelConfig,
+    question: BenchmarkQuestion,
+) -> None:
+    judge_model = db.get(ModelConfig, result.judge_model_config_id) if result.judge_model_config_id else None
+    if judge_model is None:
+        result.status = "judge_failed"
+        result.judge_status = "failed"
+        result.error_message = "Judge model is not configured."
+        return
+
+    try:
+        logger.info(
+            "judge.call.start run_id=%s result_id=%s question_id=%s model_config_id=%s judge_model_config_id=%s provider=%s model=%s",
+            result.evaluation_run_id,
+            result.id,
+            result.benchmark_question_id,
+            model_config.id,
+            judge_model.id,
+            judge_model.provider,
+            judge_model.model,
+        )
+        judge_score = judge_qa_answer(judge_model, question, result.model_answer or "")
+        logger.info(
+            "judge.call.success run_id=%s result_id=%s question_id=%s model_config_id=%s judge_model_config_id=%s provider=%s model=%s score_ratio=%.4f",
+            result.evaluation_run_id,
+            result.id,
+            result.benchmark_question_id,
+            model_config.id,
+            judge_model.id,
+            judge_model.provider,
+            judge_model.model,
+            judge_score.score_ratio,
+        )
+        result.extracted_answer = result.model_answer
+        result.is_correct = judge_score.score_ratio >= 1.0
+        result.judge_status = "completed"
+        result.judge_score_ratio = judge_score.score_ratio
+        result.judge_reason = judge_score.reason
+        result.judge_raw_response = {
+            "parsed": judge_score.raw_json,
+            "raw_response": judge_score.raw_response,
+        }
+        result.score = result.max_score * judge_score.score_ratio
+        result.status = "completed"
+    except ValueError as exc:
+        logger.warning(
+            "judge.call.failed run_id=%s result_id=%s question_id=%s model_config_id=%s judge_model_config_id=%s provider=%s model=%s error=%r",
+            result.evaluation_run_id,
+            result.id,
+            result.benchmark_question_id,
+            model_config.id,
+            judge_model.id,
+            judge_model.provider,
+            judge_model.model,
+            str(exc),
+        )
+        result.status = "judge_failed"
+        result.judge_status = "failed"
+        result.error_message = str(exc)
+
+
+def _finish_result_attempt(db, result: EvaluationResult) -> EvaluationResult:
     db.commit()
     _refresh_run_progress(db, result.evaluation_run_id)
     db.refresh(result)
@@ -196,20 +328,20 @@ def _refresh_run_progress(db, run_id: int, commit: bool = True) -> None:
             EvaluationResult.is_correct.is_(True),
         )
     ) or 0
-    scored_count = db.scalar(
-        select(func.count(EvaluationResult.id)).where(
-            EvaluationResult.evaluation_run_id == run_id,
-            EvaluationResult.score.is_not(None),
-        )
-    ) or 0
     total_score = db.scalar(
         select(func.coalesce(func.sum(EvaluationResult.score), 0.0)).where(
             EvaluationResult.evaluation_run_id == run_id,
             EvaluationResult.score.is_not(None),
         )
     ) or 0.0
+    total_max_score = db.scalar(
+        select(func.coalesce(func.sum(EvaluationResult.max_score), 0.0)).where(
+            EvaluationResult.evaluation_run_id == run_id,
+            EvaluationResult.score.is_not(None),
+        )
+    ) or 0.0
     run.completed_count = int(completed_count)
     run.correct_count = int(correct_count)
-    run.accuracy = float(total_score / scored_count) if scored_count else 0.0
+    run.accuracy = float(total_score / total_max_score) if total_max_score else 0.0
     if commit:
         db.commit()
