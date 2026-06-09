@@ -42,9 +42,9 @@ Backend:
 
 ```bash
 cd backend
-python -m venv .venv
+uv venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 export DATABASE_URL=postgresql+psycopg://test_benchmark:test_benchmark@localhost:18112/test_benchmark
 export BENCHMARK_DATA_DIR=../data/benchmarks
 export TEST_BENCHMARK_AUTH_PASSWORD=12345
@@ -109,3 +109,5 @@ docker compose -p test-benchmark -f docker-compose.yml config
 ```
 
 如改动 Dockerfile 或 Compose，应额外验证镜像构建和 `bin/local-dev.sh restart`。
+
+后端 Python 依赖安装统一使用 `uv`。本地 Docker 开发镜像内置 `uv`；手动运行后端前需先安装 `uv`。

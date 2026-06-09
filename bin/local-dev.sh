@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-test-benchmark}"
 COMPOSE=(docker compose -p "$PROJECT_NAME" -f "$ROOT_DIR/docker-compose.dev.yml")
-READY_TIMEOUT_SECONDS="${DEV_READY_TIMEOUT:-120}"
 TEST_BENCHMARK_WEB_HOST_PORT="${TEST_BENCHMARK_WEB_HOST_PORT:-18110}"
 TEST_BENCHMARK_BACKEND_HOST_PORT="${TEST_BENCHMARK_BACKEND_HOST_PORT:-18111}"
 TEST_BENCHMARK_DB_HOST_PORT="${TEST_BENCHMARK_DB_HOST_PORT:-18112}"
@@ -46,15 +45,15 @@ all_core_services_running() {
 
 start_services() {
   "${COMPOSE[@]}" up -d --remove-orphans
-  wait_for_service
   cat <<EOF
 
-Local dev stack is ready:
+Local dev stack started:
   Web:     http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}
   Backend: http://localhost:${TEST_BENCHMARK_BACKEND_HOST_PORT}/health
   DB:      localhost:${TEST_BENCHMARK_DB_HOST_PORT}
 
-Use "bin/local-dev.sh logs" to watch logs.
+Use "bin/local-dev.sh status" to check containers.
+Use "bin/local-dev.sh logs" to watch startup logs.
 EOF
 }
 
@@ -64,19 +63,6 @@ stop_services() {
 
 pull_services() {
   "${COMPOSE[@]}" pull
-}
-
-wait_for_service() {
-  local backend_url="http://localhost:${TEST_BENCHMARK_BACKEND_HOST_PORT}/health"
-  local frontend_url="http://localhost:${TEST_BENCHMARK_WEB_HOST_PORT}/"
-  local deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
-  until curl -fsS "$backend_url" >/dev/null 2>&1 && curl -fsS "$frontend_url" >/dev/null 2>&1; do
-    if (( SECONDS >= deadline )); then
-      echo "Timed out waiting for local dev services" >&2
-      return 1
-    fi
-    sleep 2
-  done
 }
 
 case "${1:-toggle}" in

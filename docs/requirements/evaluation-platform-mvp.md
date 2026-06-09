@@ -27,6 +27,8 @@
 - [x] API key 只在后端保存，前端只展示脱敏值。
 - [x] 题集列表页面。
 - [x] 从服务器本地目录导入 `custom_medical_eval_sets/*.jsonl`。
+- [x] 题集名称支持编辑；类型和模态由导入逻辑判断并只读展示。
+- [x] 题集支持删除，并同步删除其题目、评测运行和结果记录。
 - [x] 题目保存原始 JSON、题干、选项、标准答案和题型。
 - [x] 评测运行页面，可选择一个题集和一个或多个模型。
 - [x] 后端创建评测运行记录和逐题结果记录。
@@ -89,6 +91,8 @@ data/benchmarks/custom_medical_eval_sets/
 - 保留原始 JSON。
 - 有 `options` 的题目按选择题处理。
 - 无 `options` 的题目按问答题处理。
+- 题集类型由导入来源决定，例如手动上传 JSONL 为 `uploaded_jsonl`，内置目录导入为 `custom_medical_eval_sets`。
+- 题集模态由导入内容判断；第一版 JSONL 文本题统一为 `text`，后续 vision 导入再识别为 `vision`。
 - 导入应具备幂等性，同一题集重复导入不应无限重复写入。
 
 ## 评分规则
@@ -214,6 +218,8 @@ correct = expected == actual
 - `POST /api/benchmark-sets/import/custom-medical`
 - `POST /api/benchmark-sets/import/jsonl`
 - `GET /api/benchmark-sets/{id}`
+- `PUT /api/benchmark-sets/{id}`，第一版只允许更新题集名称。
+- `DELETE /api/benchmark-sets/{id}`
 - `GET /api/benchmark-sets/{id}/questions`
 - `PUT /api/benchmark-questions/{id}`
 - `DELETE /api/benchmark-questions/{id}`
@@ -229,6 +235,7 @@ correct = expected == actual
 ## 模型调用约束
 
 - 后端直接调用模型 provider，不从前端发起模型请求。
+- LLM provider HTTP 调用、重试、响应解析和错误脱敏集中在 `backend/app/llm/`，业务 API 和评测 runner 只调用统一 client。
 - `apiKey` 不返回明文。
 - provider 适配层参考已验证的内部 provider 形态：
   - `deepseek`、`qwen`、`qwen_vision` 可按 OpenAI 兼容 Chat Completions 处理。
@@ -252,7 +259,7 @@ correct = expected == actual
 
 - 模型配置：列表、创建、编辑、启用/禁用、测试连接。
 - 登录页：未登录用户只能看到登录页；登录成功后进入评测工作台，可主动退出登录。
-- 题集管理：题集列表、手动上传 JSONL 导入题集、查看题目、编辑题目、删除题目。
+- 题集管理：题集列表、手动上传 JSONL 导入题集、查看题目、编辑题集名称、删除题集、编辑题目、删除题目。
 - 评测运行：选择题集和模型，发起评测。
 - 结果看板：默认展示所有模型配置；已评测模型展示最近一次评测得分、题集、运行状态和时间，未评测模型展示未评测状态；覆盖率按“已评测 / 应评测”展示。
 - 评测运行：运行列表、进度、准确率、逐题结果、错误信息。

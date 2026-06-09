@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import ConfirmDialog from 'primevue/confirmdialog';
+import { useConfirm } from 'primevue/useconfirm';
 
 type ModelConfig = {
   id: number;
@@ -125,9 +127,11 @@ const runResults = ref<Record<number, EvaluationResult[]>>({});
 const selectedBenchmarkSetId = ref<number | null>(null);
 const selectedModelIds = ref<number[]>([]);
 const editingModelId = ref<number | null>(null);
+const editingBenchmarkSetId = ref<number | null>(null);
 const editingQuestionId = ref<number | null>(null);
 const benchmarkFileInput = ref<HTMLInputElement | null>(null);
 const modelDialogOpen = ref(false);
+const benchmarkSetDialogOpen = ref(false);
 const runDialogOpen = ref(false);
 const detailRunId = ref<number | null>(null);
 const expandedResultId = ref<number | null>(null);
@@ -137,6 +141,7 @@ const authenticated = ref(false);
 const loading = ref(false);
 const notice = ref('');
 const error = ref('');
+const confirm = useConfirm();
 
 const loginForm = reactive({
   password: '',
@@ -159,6 +164,12 @@ const questionForm = reactive({
   question: '',
   options: '',
   answer: '',
+});
+
+const benchmarkSetForm = reactive({
+  name: '',
+  category: '',
+  modality: '',
 });
 
 const capabilityOptions: CapabilityOption[] = [
@@ -242,6 +253,9 @@ const modelOptionsForForm = computed(() => {
   return modelForm.model && !options.includes(modelForm.model) ? [modelForm.model, ...options] : options;
 });
 const modelDialogTitle = computed(() => (isEditingModel.value ? '编辑模型' : '新增模型'));
+const selectedBenchmarkSet = computed(() => {
+  return benchmarkSets.value.find((set) => set.id === selectedBenchmarkSetId.value) ?? null;
+});
 const detailRun = computed(() => runs.value.find((run) => run.id === detailRunId.value) ?? null);
 const scoredModelScores = computed(() => modelScores.value.filter((score) => score.scoredCount > 0));
 const evaluatedModelScores = computed(() => modelScores.value.filter((score) => score.latestRunId));
@@ -344,6 +358,21 @@ async function loginUser() {
   });
 }
 
+function confirmLogout(event: Event) {
+  confirm.require({
+    target: event.currentTarget as HTMLElement,
+    message: '确定退出当前评测平台会话吗？',
+    header: '退出登录',
+    icon: 'pi pi-sign-out',
+    rejectLabel: '取消',
+    acceptLabel: '退出',
+    acceptClass: 'p-button-danger',
+    accept: () => {
+      void logoutUser();
+    },
+  });
+}
+
 async function logoutUser() {
   await withLoading(async () => {
     await api<SessionState>('/api/auth/logout', { method: 'POST' });
@@ -378,6 +407,7 @@ function clearWorkspaceState() {
   detailRunId.value = null;
   expandedResultId.value = null;
   modelDialogOpen.value = false;
+  benchmarkSetDialogOpen.value = false;
   runDialogOpen.value = false;
 }
 
@@ -406,6 +436,10 @@ async function loadModels() {
 
 async function loadBenchmarkSets() {
   benchmarkSets.value = await api<BenchmarkSet[]>('/api/benchmark-sets');
+  if (selectedBenchmarkSetId.value && !benchmarkSets.value.some((set) => set.id === selectedBenchmarkSetId.value)) {
+    selectedBenchmarkSetId.value = null;
+    questions.value = [];
+  }
   if (!selectedBenchmarkSetId.value && benchmarkSets.value.length) {
     selectedBenchmarkSetId.value = benchmarkSets.value[0].id;
   }
@@ -595,6 +629,69 @@ async function viewQuestions(id: number) {
   });
 }
 
+function editBenchmarkSet(set: BenchmarkSet) {
+  editingBenchmarkSetId.value = set.id;
+  benchmarkSetForm.name = set.name;
+  benchmarkSetForm.category = set.category;
+  benchmarkSetForm.modality = set.modality;
+  benchmarkSetDialogOpen.value = true;
+}
+
+function closeBenchmarkSetDialog() {
+  benchmarkSetDialogOpen.value = false;
+  editingBenchmarkSetId.value = null;
+  benchmarkSetForm.name = '';
+  benchmarkSetForm.category = '';
+  benchmarkSetForm.modality = '';
+}
+
+async function saveBenchmarkSet() {
+  if (!editingBenchmarkSetId.value) return;
+  await withLoading(async () => {
+    const updated = await api<BenchmarkSet>(`/api/benchmark-sets/${editingBenchmarkSetId.value}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: benchmarkSetForm.name,
+      }),
+    });
+    notice.value = '题集名称已更新';
+    closeBenchmarkSetDialog();
+    await Promise.all([loadBenchmarkSets(), loadRuns(), loadModelScores()]);
+    if (selectedBenchmarkSetId.value === updated.id) {
+      await loadQuestions(updated.id);
+    }
+  });
+}
+
+function confirmDeleteBenchmarkSet(set: BenchmarkSet, event: Event) {
+  confirm.require({
+    target: event.currentTarget as HTMLElement,
+    message: `确定删除题集“${set.name}”吗？该题集下的题目、评测运行和结果记录都会删除。`,
+    header: '删除题集',
+    icon: 'pi pi-exclamation-triangle',
+    rejectLabel: '取消',
+    acceptLabel: '删除',
+    acceptClass: 'p-button-danger',
+    accept: () => {
+      void deleteBenchmarkSet(set);
+    },
+  });
+}
+
+async function deleteBenchmarkSet(set: BenchmarkSet) {
+  await withLoading(async () => {
+    await api<void>(`/api/benchmark-sets/${set.id}`, { method: 'DELETE' });
+    notice.value = '题集已删除';
+    if (selectedBenchmarkSetId.value === set.id) {
+      selectedBenchmarkSetId.value = null;
+      questions.value = [];
+    }
+    detailRunId.value = null;
+    expandedResultId.value = null;
+    await Promise.all([loadBenchmarkSets(), loadRuns(), loadModelScores()]);
+  });
+}
+
 function editQuestion(question: BenchmarkQuestion) {
   editingQuestionId.value = question.id;
   questionForm.questionType = question.questionType;
@@ -746,6 +843,10 @@ function progressPercent(run: EvaluationRun) {
   return Math.round((run.completedCount / run.totalCount) * 100);
 }
 
+function accuracyPercent(run: EvaluationRun) {
+  return Math.round(run.accuracy * 100);
+}
+
 function resultsForRun(runId: number) {
   return runResults.value[runId] ?? [];
 }
@@ -876,17 +977,36 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
 </script>
 
 <template>
+  <ConfirmDialog />
   <main class="app-shell">
     <header class="topbar">
-      <div>
+      <div class="brand-block">
         <h1>test-benchmark</h1>
         <p>医疗模型评测工作台</p>
       </div>
-      <div class="topbar-actions">
-        <button v-if="authenticated" type="button" class="secondary" :disabled="loading" @click="logoutUser">
-          退出登录
+      <nav v-if="authenticated" class="tabs topbar-tabs" aria-label="primary">
+        <button
+          v-for="tab in tabs"
+          :key="tab.id"
+          type="button"
+          :class="{ active: activeTab === tab.id }"
+          @click="activeTab = tab.id"
+        >
+          {{ tab.label }}
         </button>
-        <div class="health-pill">API / PostgreSQL / Evaluation</div>
+      </nav>
+      <div class="topbar-actions">
+        <button
+          v-if="authenticated"
+          type="button"
+          class="icon-button"
+          :disabled="loading"
+          title="退出登录"
+          aria-label="退出登录"
+          @click="confirmLogout"
+        >
+          <i class="pi pi-sign-out" aria-hidden="true"></i>
+        </button>
       </div>
     </header>
 
@@ -918,18 +1038,6 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
     </section>
 
     <template v-else>
-      <nav class="tabs" aria-label="primary">
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        type="button"
-        :class="{ active: activeTab === tab.id }"
-        @click="activeTab = tab.id"
-      >
-        {{ tab.label }}
-      </button>
-      </nav>
-
     <section v-if="activeTab === 'models'" class="section">
       <div class="section-head">
         <div>
@@ -1026,7 +1134,13 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
             <td>{{ set.category }}</td>
             <td>{{ set.modality }}</td>
             <td>{{ set.questionCount }}</td>
-            <td><button type="button" class="secondary" @click="viewQuestions(set.id)">查看题目</button></td>
+            <td>
+              <div class="row-actions">
+                <button type="button" class="secondary" @click="viewQuestions(set.id)">查看题目</button>
+                <button type="button" class="secondary" @click="editBenchmarkSet(set)">编辑</button>
+                <button type="button" class="danger" @click="confirmDeleteBenchmarkSet(set, $event)">删除</button>
+              </div>
+            </td>
           </tr>
           <tr v-if="!benchmarkSets.length">
             <td colspan="5" class="empty">暂无题集，请先导入</td>
@@ -1035,7 +1149,17 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
       </table>
 
       <div v-if="questions.length" class="detail-list">
-        <h3>题目预览</h3>
+        <div class="detail-head">
+          <div>
+            <h3>{{ selectedBenchmarkSet?.name ?? '题目预览' }}</h3>
+            <p v-if="selectedBenchmarkSet">
+              {{ selectedBenchmarkSet.category }} · {{ selectedBenchmarkSet.modality }} · {{ selectedBenchmarkSet.questionCount }} 题
+            </p>
+          </div>
+          <button v-if="selectedBenchmarkSet" type="button" class="secondary" @click="editBenchmarkSet(selectedBenchmarkSet)">
+            编辑题集名称
+          </button>
+        </div>
         <article v-for="question in questions" :key="question.id" class="question-row">
           <div class="question-meta">#{{ question.sourceRow }} · {{ question.questionType }}</div>
           <template v-if="editingQuestionId === question.id">
@@ -1106,7 +1230,7 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
           <tr>
             <th>ID</th>
             <th>题集</th>
-            <th>状态</th>
+            <th>评测状态</th>
             <th>进度</th>
             <th>准确率</th>
             <th>操作</th>
@@ -1116,7 +1240,9 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
           <tr v-for="run in runs" :key="run.id">
             <td>#{{ run.id }}</td>
             <td>{{ run.benchmarkSetName || run.benchmarkSetId }}</td>
-            <td>{{ formatStatus(run.status) }}</td>
+            <td>
+              <span :class="statusBadgeClass(run.status)">{{ formatStatus(run.status) }}</span>
+            </td>
             <td>{{ run.completedCount }} / {{ run.totalCount }}</td>
             <td>{{ formatPercent(run.accuracy) }}</td>
             <td>
@@ -1174,6 +1300,10 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
               <p>{{ providerLabel(score.provider) }} · {{ score.model }}</p>
             </div>
             <div class="score-result">
+              <span :class="['score-status-pill', `score-status-pill-${score.latestRunStatus || 'pending'}`]">
+                <span>评测状态</span>
+                <strong>{{ formatOptionalStatus(score.latestRunStatus) }}</strong>
+              </span>
               <strong>{{ modelScoreStatus(score) }}</strong>
               <button
                 type="button"
@@ -1191,7 +1321,6 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
           <div class="score-meta">
             <span>题集：{{ score.benchmarkSetName || '-' }}</span>
             <span>运行：{{ score.latestRunId ? `#${score.latestRunId}` : '-' }}</span>
-            <span>状态：{{ formatOptionalStatus(score.latestRunStatus) }}</span>
             <span>得分：{{ score.correctCount }} / {{ score.scoredCount || score.totalCount }}</span>
             <span>时间：{{ formatDateTime(score.latestEvaluatedAt) }}</span>
           </div>
@@ -1202,12 +1331,41 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
       </div>
     </section>
 
+    <div v-if="benchmarkSetDialogOpen" class="modal-backdrop" role="presentation" @click.self="closeBenchmarkSetDialog">
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="benchmark-set-dialog-title">
+        <div class="modal-head">
+          <div>
+            <h2 id="benchmark-set-dialog-title">编辑题集名称</h2>
+            <p>类型和模态由导入文件判断，不在页面手动修改。</p>
+          </div>
+          <button type="button" class="secondary" @click="closeBenchmarkSetDialog">关闭</button>
+        </div>
+        <form class="modal-form" @submit.prevent="saveBenchmarkSet">
+          <label>
+            题集名称
+            <input v-model="benchmarkSetForm.name" required />
+          </label>
+          <div class="readonly-fields">
+            <span>类型：{{ benchmarkSetForm.category || '-' }}</span>
+            <span>模态：{{ benchmarkSetForm.modality || '-' }}</span>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="secondary" :disabled="loading" @click="closeBenchmarkSetDialog">取消</button>
+            <button type="submit" :disabled="loading">保存名称</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
     <div v-if="detailRun" class="modal-backdrop" role="presentation" @click.self="closeRunDetails">
       <section class="modal-panel modal-panel-xl" role="dialog" aria-modal="true" aria-labelledby="run-detail-title">
         <div class="modal-head">
           <div>
             <h2 id="run-detail-title">评测明细 #{{ detailRun.id }}</h2>
-            <p>{{ detailRun.benchmarkSetName || detailRun.benchmarkSetId }} · {{ formatStatus(detailRun.status) }}</p>
+            <div class="modal-subhead">
+              <span>{{ detailRun.benchmarkSetName || detailRun.benchmarkSetId }}</span>
+              <span :class="statusBadgeClass(detailRun.status)">评测状态：{{ formatStatus(detailRun.status) }}</span>
+            </div>
           </div>
           <button type="button" class="secondary" @click="closeRunDetails">关闭</button>
         </div>
@@ -1215,7 +1373,8 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
         <div class="modal-detail">
           <div class="progress-panel progress-panel-compact">
             <div>
-              <strong>{{ detailRun.completedCount }} / {{ detailRun.totalCount }}</strong>
+              <strong>{{ detailRun.correctCount }} / {{ detailRun.totalCount }}</strong>
+              <span>正确 / 总数</span>
               <span>准确率 {{ formatPercent(detailRun.accuracy) }}</span>
               <button
                 v-if="canStopRun(detailRun)"
@@ -1227,7 +1386,7 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
                 结束评测
               </button>
             </div>
-            <div class="progress-bar"><span :style="{ width: `${progressPercent(detailRun)}%` }"></span></div>
+            <div class="progress-bar"><span :style="{ width: `${accuracyPercent(detailRun)}%` }"></span></div>
           </div>
 
           <div class="modal-table-scroll">
@@ -1238,7 +1397,7 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
                   <th>题目</th>
                   <th>标准答案</th>
                   <th>提取答案</th>
-                  <th>状态</th>
+                  <th>评测状态</th>
                   <th>结果</th>
                   <th>耗时</th>
                   <th>问答记录</th>

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -15,12 +15,13 @@ from .auth import AUTH_COOKIE_NAME, auth_configured, login, logout, require_sess
 from .benchmark_importer import BenchmarkImportError, import_custom_medical_eval_sets, import_jsonl_lines
 from .database import get_db, init_db
 from .evaluation_runner import prepare_run_items, start_evaluation_run, stop_evaluation_run
-from .llm_client import call_model
+from .llm import call_model
 from .models import BenchmarkQuestion, BenchmarkSet, EvaluationResult, EvaluationRun, ModelConfig
 from .schemas import (
     BenchmarkQuestionOut,
     BenchmarkQuestionUpdate,
     BenchmarkSetOut,
+    BenchmarkSetUpdate,
     EvaluationResultOut,
     EvaluationRunCreate,
     EvaluationRunOut,
@@ -201,6 +202,42 @@ async def import_jsonl_benchmark(
 @app.get("/api/benchmark-sets/{benchmark_set_id}", response_model=BenchmarkSetOut)
 def get_benchmark_set(benchmark_set_id: int, _: None = Depends(require_session), db: Session = Depends(get_db)) -> BenchmarkSetOut:
     return _benchmark_set_out(_get_benchmark_set_or_404(db, benchmark_set_id))
+
+
+@app.put("/api/benchmark-sets/{benchmark_set_id}", response_model=BenchmarkSetOut)
+def update_benchmark_set(
+    benchmark_set_id: int,
+    payload: BenchmarkSetUpdate,
+    _: None = Depends(require_session),
+    db: Session = Depends(get_db),
+) -> BenchmarkSetOut:
+    benchmark_set = _get_benchmark_set_or_404(db, benchmark_set_id)
+    updated_fields = payload.model_fields_set
+    if "name" in updated_fields and payload.name is not None:
+        benchmark_set.name = payload.name.strip()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Benchmark set name already exists.") from exc
+    db.refresh(benchmark_set)
+    return _benchmark_set_out(benchmark_set)
+
+
+@app.delete("/api/benchmark-sets/{benchmark_set_id}")
+def delete_benchmark_set(
+    benchmark_set_id: int,
+    _: None = Depends(require_session),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    benchmark_set = _get_benchmark_set_or_404(db, benchmark_set_id)
+    run_ids = select(EvaluationRun.id).where(EvaluationRun.benchmark_set_id == benchmark_set_id)
+    db.execute(delete(EvaluationResult).where(EvaluationResult.evaluation_run_id.in_(run_ids)))
+    db.execute(delete(EvaluationRun).where(EvaluationRun.benchmark_set_id == benchmark_set_id))
+    db.execute(delete(BenchmarkQuestion).where(BenchmarkQuestion.benchmark_set_id == benchmark_set_id))
+    db.delete(benchmark_set)
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/benchmark-sets/{benchmark_set_id}/questions", response_model=list[BenchmarkQuestionOut])

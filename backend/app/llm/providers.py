@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
-from .models import ModelConfig
+from ..models import ModelConfig
 
 
 DEFAULT_BASE_URLS = {
@@ -39,13 +38,17 @@ SENSITIVE_QUERY_RE = re.compile(r"([?&](?:key|api_key|access_token)=)[^&\s'\"]+"
 BEARER_TOKEN_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+")
 
 
-@dataclass
-class LlmCallResult:
-    ok: bool
-    text: str | None
-    latency_ms: int
-    raw_response: dict[str, Any] | None = None
-    error: str | None = None
+def call_provider(config: ModelConfig, prompt: str, max_output_tokens: int | None) -> tuple[str, dict[str, Any]]:
+    if config.provider == "openai_responses":
+        return _call_openai_responses(config, prompt, max_output_tokens)
+    if config.provider == "gemini":
+        return _call_gemini(config, prompt, max_output_tokens)
+    return _call_openai_compatible(config, prompt, max_output_tokens)
+
+
+def sanitize_error_message(message: str) -> str:
+    message = SENSITIVE_QUERY_RE.sub(r"\1***", message)
+    return BEARER_TOKEN_RE.sub(r"\1***", message)
 
 
 def _base_url(config: ModelConfig) -> str:
@@ -74,11 +77,6 @@ def _max_output_tokens(config: ModelConfig, override: int | None) -> int:
     return override if override is not None else config.max_output_tokens
 
 
-def _sanitize_error_message(message: str) -> str:
-    message = SENSITIVE_QUERY_RE.sub(r"\1***", message)
-    return BEARER_TOKEN_RE.sub(r"\1***", message)
-
-
 def _retry_delay(attempt: int) -> float:
     return 0.4 * (2**attempt)
 
@@ -97,30 +95,6 @@ def _post_with_retry(client: httpx.Client, url: str, **kwargs: Any) -> httpx.Res
                 raise
             time.sleep(_retry_delay(attempt))
     raise RuntimeError("HTTP request failed after retries.")
-
-
-def call_model(config: ModelConfig, prompt: str, max_output_tokens: int | None = None) -> LlmCallResult:
-    started = time.perf_counter()
-    try:
-        if config.provider == "openai_responses":
-            text, raw = _call_openai_responses(config, prompt, max_output_tokens)
-        elif config.provider == "gemini":
-            text, raw = _call_gemini(config, prompt, max_output_tokens)
-        else:
-            text, raw = _call_openai_compatible(config, prompt, max_output_tokens)
-        return LlmCallResult(
-            ok=True,
-            text=text,
-            raw_response=raw,
-            latency_ms=int((time.perf_counter() - started) * 1000),
-        )
-    except Exception as exc:
-        return LlmCallResult(
-            ok=False,
-            text=None,
-            error=_sanitize_error_message(str(exc)),
-            latency_ms=int((time.perf_counter() - started) * 1000),
-        )
 
 
 def _call_openai_compatible(config: ModelConfig, prompt: str, max_output_tokens: int | None) -> tuple[str, dict[str, Any]]:

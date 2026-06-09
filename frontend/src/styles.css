@@ -71,24 +71,48 @@ button.danger:hover {
   background: #8f1d14;
 }
 
+.icon-button {
+  width: 32px;
+  min-height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border-color: var(--line);
+  border-radius: 6px;
+  padding: 0;
+  background: white;
+  color: var(--muted);
+}
+
+.icon-button:hover {
+  border-color: var(--accent);
+  background: #edf7f5;
+  color: var(--accent);
+}
+
 .app-shell {
   width: min(1440px, calc(100% - 32px));
   margin: 0 auto;
-  padding: 24px 0 40px;
+  padding: 14px 0 32px;
 }
 
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 16px;
+  gap: 14px;
+  margin-bottom: 10px;
 }
 
 .topbar-actions {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 0 0 auto;
+}
+
+.brand-block {
+  min-width: 150px;
+  flex: 0 0 auto;
 }
 
 h1,
@@ -99,7 +123,7 @@ p {
 }
 
 h1 {
-  font-size: 28px;
+  font-size: 21px;
   line-height: 1.1;
 }
 
@@ -117,14 +141,9 @@ h3 {
   color: var(--muted);
 }
 
-.health-pill {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 8px 12px;
-  background: var(--panel);
-  color: var(--muted);
-  font-size: 13px;
-  white-space: nowrap;
+.topbar p {
+  margin-top: 2px;
+  font-size: 12px;
 }
 
 .login-shell {
@@ -163,7 +182,15 @@ h3 {
   margin-bottom: 14px;
 }
 
+.topbar-tabs {
+  flex: 1 1 auto;
+  justify-content: center;
+  margin-bottom: 0;
+}
+
 .tabs button {
+  min-height: 32px;
+  padding: 5px 10px;
   background: white;
   color: var(--ink);
   border-color: var(--line);
@@ -398,6 +425,19 @@ td {
   margin-top: 10px;
 }
 
+.detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-head p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .question-edit-grid {
   display: grid;
   grid-template-columns: 160px minmax(0, 1fr);
@@ -546,8 +586,58 @@ td {
 .score-result {
   display: grid;
   justify-items: end;
-  gap: 6px;
+  gap: 7px;
   flex: 0 0 auto;
+}
+
+.score-status-pill {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  border: 1px solid #d8e0ea;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #f8fafc;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.score-status-pill span {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.score-status-pill strong {
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.score-status-pill-running {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.score-status-pill-completed {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.score-status-pill-failed {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.score-status-pill-stopped {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #b45309;
 }
 
 .score-result > strong {
@@ -636,6 +726,11 @@ button.compact {
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+td .status-badge {
+  min-width: 68px;
+  justify-content: center;
 }
 
 .status-badge-pending {
@@ -755,6 +850,15 @@ button.compact {
   color: var(--muted);
 }
 
+.modal-subhead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--muted);
+}
+
 .modal-list {
   overflow: auto;
   padding: 10px 16px;
@@ -821,6 +925,23 @@ button.compact {
   border-top: 1px solid var(--line);
 }
 
+.readonly-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.p-confirm-dialog {
+  max-width: min(420px, calc(100vw - 32px));
+}
+
 @media (max-width: 980px) {
   .form-grid,
   .run-panel,
@@ -844,6 +965,19 @@ button.compact {
   .topbar,
   .section-head,
   .progress-panel > div:first-child {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .topbar-tabs {
+    justify-content: flex-start;
+  }
+
+  .brand-block {
+    min-width: 0;
+  }
+
+  .detail-head {
     flex-direction: column;
     align-items: stretch;
   }

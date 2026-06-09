@@ -92,6 +92,10 @@ class BenchmarkSetOut(BaseModel):
     updatedAt: datetime
 
 
+class BenchmarkSetUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=180)
+
+
 class BenchmarkQuestionOut(BaseModel):
     id: int
     sourceRow: int

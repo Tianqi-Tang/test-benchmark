@@ -98,9 +98,9 @@ bin/local-dev.sh logs
 ## 本地测试
 
 ```bash
-python -m venv .venv
+uv venv .venv
 source .venv/bin/activate
-pip install -r backend/requirements.txt
+uv pip install -r backend/requirements.txt
 pytest -q backend/tests
 ```
 
@@ -108,7 +108,7 @@ pytest -q backend/tests
 
 GitHub Actions 会在 `main` 分支 push 后执行：
 
-1. 安装 Python 依赖。
+1. 使用 `uv` 安装 Python 依赖。
 2. 运行测试。
 3. 构建 Docker 镜像。
 4. 通过 SSH 部署到测试服务器。

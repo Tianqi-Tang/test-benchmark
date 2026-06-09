@@ -5,7 +5,7 @@ from threading import Thread
 from sqlalchemy import func, select, update
 
 from .database import get_sessionmaker
-from .llm_client import call_model
+from .llm import call_model
 from .models import BenchmarkQuestion, EvaluationResult, EvaluationRun, ModelConfig, utc_now
 from .prompt_builder import build_prompt
 from .scoring import score_answer

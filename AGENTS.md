@@ -127,6 +127,7 @@ bin/local-dev.sh stop
 - 没有用户明确要求时，不创建 commit。
 - 没有用户明确要求时，不 push。
 - 用户确认“提交变更”后只提交；“推送代码”后再推送。
+- `__pycache__`、`.pytest_cache`、前端缓存、构建缓存等已忽略的运行时文件不能影响提交判断；不要为了提交主动清理它们，也不要把它们纳入提交。
 
 ## Do Not Change Casually
 
@@ -136,6 +137,7 @@ bin/local-dev.sh stop
 - API key 的服务端保存和脱敏展示规则。
 - 数据目录忽略规则：`data/`、`storage/`、评测输出、模型文件不提交。
 - PostgreSQL 作为项目数据库的方向。
+- 不要主动删除 `__pycache__` 或类似运行时缓存目录；除非用户明确要求，或它们确实造成测试、构建、运行失败。
 
 ## Reference Docs
 
