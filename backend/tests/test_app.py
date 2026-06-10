@@ -2,11 +2,12 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.database import _database_url
+from app import evaluation_runner
 from app.evaluation_runner import PROGRESS_COMPLETED_STATUSES
 from app.llm import providers
 from app.llm.client import call_model
 from app.main import _capability_values, _model_score_out, _result_is_retryable, app
-from app.models import BenchmarkQuestion, EvaluationResult, ModelConfig
+from app.models import BenchmarkQuestion, EvaluationResult, EvaluationRun, ModelConfig
 from app.scoring import normalize_choice, score_answer
 from app.schemas import ModelConfigCreate, ModelConfigUpdate
 
@@ -268,3 +269,211 @@ def test_stopped_results_do_not_count_as_progress_completed():
     assert "failed" in PROGRESS_COMPLETED_STATUSES
     assert "judge_failed" in PROGRESS_COMPLETED_STATUSES
     assert "stopped" not in PROGRESS_COMPLETED_STATUSES
+
+
+def test_start_evaluation_run_deduplicates_active_threads(monkeypatch):
+    started_run_ids = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.args = args
+
+        def start(self):
+            started_run_ids.append(self.args[0])
+
+    monkeypatch.setattr(evaluation_runner, "Thread", FakeThread)
+    evaluation_runner._active_run_ids.clear()
+
+    try:
+        assert evaluation_runner.start_evaluation_run(7) is True
+        assert evaluation_runner.start_evaluation_run(7) is False
+        assert started_run_ids == [7]
+    finally:
+        evaluation_runner._active_run_ids.clear()
+
+
+def test_resume_interrupted_evaluation_runs_schedules_only_active_runs(monkeypatch):
+    scheduled_run_ids = []
+
+    class FakeScalars:
+        def all(self):
+            return [2, 3]
+
+        def __iter__(self):
+            return iter([2, 3])
+
+    class FakeDb:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        def scalars(self, statement):
+            compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+            assert "evaluation_runs.status IN ('pending', 'running')" in compiled
+            return FakeScalars()
+
+    class FakeSessionMaker:
+        def __call__(self):
+            return FakeDb()
+
+    monkeypatch.setattr(evaluation_runner, "get_sessionmaker", lambda: FakeSessionMaker())
+    monkeypatch.setattr(evaluation_runner, "start_evaluation_run", lambda run_id: scheduled_run_ids.append(run_id) or True)
+
+    assert evaluation_runner.resume_interrupted_evaluation_runs() == 2
+    assert scheduled_run_ids == [2, 3]
+
+
+def test_run_evaluation_resumes_only_unfinished_results(monkeypatch):
+    processed_result_ids = []
+    commits = []
+
+    class FakeScalars:
+        def __init__(self, values):
+            self.values = values
+
+        def all(self):
+            return self.values
+
+        def __iter__(self):
+            return iter(self.values)
+
+    class FakeDb:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        def get(self, model, item_id):
+            if model is EvaluationRun:
+                return EvaluationRun(id=item_id, status="running", total_count=2)
+            return EvaluationResult(id=item_id, evaluation_run_id=11, status="pending")
+
+        def commit(self):
+            commits.append(True)
+
+        def scalars(self, statement):
+            compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+            assert "evaluation_results.status IN ('pending', 'running')" in compiled
+            return FakeScalars([101, 102])
+
+        def scalar(self, _statement):
+            return 0
+
+    class FakeSessionMaker:
+        def __call__(self):
+            return FakeDb()
+
+    def fake_run_result_once(_db, result):
+        processed_result_ids.append(result.id)
+        result.status = "completed"
+        return result
+
+    monkeypatch.setattr(evaluation_runner, "get_sessionmaker", lambda: FakeSessionMaker())
+    monkeypatch.setattr(evaluation_runner, "run_result_once", fake_run_result_once)
+
+    evaluation_runner.run_evaluation(11)
+
+    assert processed_result_ids == [101, 102]
+    assert commits
+
+
+def test_run_evaluation_thread_marks_crash_and_releases_active_run(monkeypatch):
+    crashed = []
+
+    def fake_run_evaluation(_run_id):
+        raise RuntimeError("boom")
+
+    def fake_mark_run_crashed(run_id, error_message):
+        crashed.append((run_id, error_message))
+
+    monkeypatch.setattr(evaluation_runner, "run_evaluation", fake_run_evaluation)
+    monkeypatch.setattr(evaluation_runner, "_mark_run_crashed", fake_mark_run_crashed)
+    evaluation_runner._active_run_ids.clear()
+    evaluation_runner._active_run_ids.add(23)
+
+    evaluation_runner._run_evaluation_thread(23)
+
+    assert crashed == [(23, "boom")]
+    assert 23 not in evaluation_runner._active_run_ids
+
+
+def test_mark_run_crashed_fails_active_run_and_unfinished_results(monkeypatch):
+    commits = []
+    executed = []
+    run = EvaluationRun(id=31, status="running", total_count=2)
+
+    class FakeDb:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        def get(self, model, item_id):
+            if model is EvaluationRun and item_id == 31:
+                return run
+            return None
+
+        def execute(self, statement):
+            compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+            assert "evaluation_results.status IN ('pending', 'running')" in compiled
+            assert "SET status='failed'" in compiled
+            executed.append(compiled)
+
+        def scalar(self, _statement):
+            return 0
+
+        def commit(self):
+            commits.append(True)
+
+    class FakeSessionMaker:
+        def __call__(self):
+            return FakeDb()
+
+    monkeypatch.setattr(evaluation_runner, "get_sessionmaker", lambda: FakeSessionMaker())
+
+    evaluation_runner._mark_run_crashed(31, "boom")
+
+    assert run.status == "failed"
+    assert run.error_message == "Evaluation worker crashed: boom"
+    assert run.finished_at is not None
+    assert executed
+    assert commits == [True]
+
+
+def test_mark_run_crashed_keeps_stopped_run_unchanged(monkeypatch):
+    commits = []
+    run = EvaluationRun(id=32, status="stopped", total_count=2)
+
+    class FakeDb:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        def get(self, model, item_id):
+            if model is EvaluationRun and item_id == 32:
+                return run
+            return None
+
+        def execute(self, _statement):
+            raise AssertionError("stopped runs should not be updated")
+
+        def commit(self):
+            commits.append(True)
+
+    class FakeSessionMaker:
+        def __call__(self):
+            return FakeDb()
+
+    monkeypatch.setattr(evaluation_runner, "get_sessionmaker", lambda: FakeSessionMaker())
+
+    evaluation_runner._mark_run_crashed(32, "boom")
+
+    assert run.status == "stopped"
+    assert run.error_message is None
+    assert commits == []

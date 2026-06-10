@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from threading import Thread
+from threading import Lock, Thread
 
 from sqlalchemy import func, select, update
 
@@ -13,13 +13,60 @@ from .prompt_builder import build_prompt
 from .scoring import score_answer
 
 
+ACTIVE_RUN_STATUSES = ("pending", "running")
+ACTIVE_RESULT_STATUSES = ("pending", "running")
 PROGRESS_COMPLETED_STATUSES = ("completed", "failed", "judge_failed")
 logger = logging.getLogger("uvicorn.error")
+_active_run_ids: set[int] = set()
+_active_run_ids_lock = Lock()
 
 
-def start_evaluation_run(run_id: int) -> None:
-    thread = Thread(target=run_evaluation, args=(run_id,), daemon=True)
+def start_evaluation_run(run_id: int) -> bool:
+    with _active_run_ids_lock:
+        if run_id in _active_run_ids:
+            logger.info("evaluation.run.already_active run_id=%s", run_id)
+            return False
+        _active_run_ids.add(run_id)
+    thread = Thread(target=_run_evaluation_thread, args=(run_id,), daemon=True)
     thread.start()
+    return True
+
+
+def resume_interrupted_evaluation_runs() -> int:
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        run_ids = list(
+            db.scalars(
+                select(EvaluationRun.id)
+                .where(EvaluationRun.status.in_(ACTIVE_RUN_STATUSES))
+                .order_by(EvaluationRun.id)
+            )
+        )
+
+    scheduled_count = 0
+    for run_id in run_ids:
+        if start_evaluation_run(run_id):
+            scheduled_count += 1
+
+    if run_ids:
+        logger.info(
+            "evaluation.resume.scheduled count=%s candidate_count=%s run_ids=%s",
+            scheduled_count,
+            len(run_ids),
+            run_ids,
+        )
+    return scheduled_count
+
+
+def _run_evaluation_thread(run_id: int) -> None:
+    try:
+        run_evaluation(run_id)
+    except Exception as exc:
+        logger.exception("evaluation.run.crashed run_id=%s", run_id)
+        _mark_run_crashed(run_id, str(exc) or exc.__class__.__name__)
+    finally:
+        with _active_run_ids_lock:
+            _active_run_ids.discard(run_id)
 
 
 def stop_evaluation_run(db, run: EvaluationRun) -> None:
@@ -40,13 +87,17 @@ def run_evaluation(run_id: int) -> None:
             _mark_remaining_stopped(db, run_id)
             return
         run.status = "running"
-        run.started_at = utc_now()
+        run.started_at = run.started_at or utc_now()
+        run.finished_at = None
         db.commit()
 
         result_ids = list(
             db.scalars(
                 select(EvaluationResult.id)
-                .where(EvaluationResult.evaluation_run_id == run_id)
+                .where(
+                    EvaluationResult.evaluation_run_id == run_id,
+                    EvaluationResult.status.in_(ACTIVE_RESULT_STATUSES),
+                )
                 .order_by(EvaluationResult.id)
             )
         )
@@ -310,6 +361,32 @@ def _mark_remaining_stopped(db, run_id: int, commit: bool = True) -> None:
     _refresh_run_progress(db, run_id, commit=False)
     if commit:
         db.commit()
+
+
+def _mark_run_crashed(run_id: int, error_message: str) -> None:
+    SessionLocal = get_sessionmaker()
+    now = utc_now()
+    message = f"Evaluation worker crashed: {error_message}"
+    try:
+        with SessionLocal() as db:
+            run = db.get(EvaluationRun, run_id)
+            if run is None or run.status == "stopped":
+                return
+            run.status = "failed"
+            run.error_message = message
+            run.finished_at = now
+            db.execute(
+                update(EvaluationResult)
+                .where(
+                    EvaluationResult.evaluation_run_id == run_id,
+                    EvaluationResult.status.in_(ACTIVE_RESULT_STATUSES),
+                )
+                .values(status="failed", error_message=message, updated_at=now)
+            )
+            _refresh_run_progress(db, run_id, commit=False)
+            db.commit()
+    except Exception:
+        logger.exception("evaluation.run.crash_mark_failed run_id=%s", run_id)
 
 
 def _refresh_run_progress(db, run_id: int, commit: bool = True) -> None:

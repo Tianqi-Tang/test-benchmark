@@ -14,7 +14,14 @@ from sqlalchemy.orm import Session, selectinload
 from .auth import AUTH_COOKIE_NAME, auth_configured, login, logout, require_session, session_is_active
 from .benchmark_importer import BenchmarkImportError, import_custom_medical_eval_sets, import_jsonl_lines
 from .database import get_db, init_db
-from .evaluation_runner import prepare_run_items, refresh_run_completion_status, run_result_once, start_evaluation_run, stop_evaluation_run
+from .evaluation_runner import (
+    prepare_run_items,
+    refresh_run_completion_status,
+    resume_interrupted_evaluation_runs,
+    run_result_once,
+    start_evaluation_run,
+    stop_evaluation_run,
+)
 from .judging import build_judge_prompt
 from .llm import call_model
 from .models import BenchmarkQuestion, BenchmarkSet, EvaluationResult, EvaluationRun, ModelConfig
@@ -41,6 +48,7 @@ from .schemas import (
 async def lifespan(app: FastAPI):
     if os.getenv("DATABASE_URL"):
         init_db()
+        resume_interrupted_evaluation_runs()
     yield
 
 
