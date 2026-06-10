@@ -34,6 +34,7 @@ type ModelConfig = {
   lastTestStatus: string | null;
   lastTestLatencyMs: number | null;
   lastTestError: string | null;
+  lastTestRawResponse: unknown | null;
   lastTestedAt: string | null;
 };
 
@@ -140,6 +141,7 @@ type ProviderOption = {
   modelOptions: string[];
   baseUrl: string;
   defaultCapabilities: Capability[];
+  defaultMaxOutputTokens?: number;
 };
 
 type CapabilityOption = {
@@ -151,6 +153,7 @@ type ModelTestState = {
   status: 'success' | 'failed';
   message: string | null;
   latencyMs: number | null;
+  rawResponse?: unknown;
 };
 
 type TabChangeEvent = {
@@ -196,6 +199,7 @@ const questionPopoverResult = ref<EvaluationResult | null>(null);
 const retryingResultIds = ref<Set<number>>(new Set());
 const testingModelIds = ref<Set<number>>(new Set());
 const modelTestStates = ref<Record<number, ModelTestState>>({});
+const selectedModelTestRecord = ref<{ modelName: string; payload: unknown } | null>(null);
 const authChecked = ref(false);
 const authenticated = ref(false);
 const loading = ref(false);
@@ -297,6 +301,16 @@ const providerOptions: ProviderOption[] = [
     ],
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     defaultCapabilities: ['text'],
+  },
+  {
+    value: 'nvidia',
+    label: 'NVIDIA NIM',
+    shortLabel: 'NVIDIA',
+    defaultModel: 'deepseek-v4-pro',
+    modelOptions: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    defaultCapabilities: ['text'],
+    defaultMaxOutputTokens: 16384,
   },
   {
     value: 'openai_responses',
@@ -568,6 +582,7 @@ function applyProviderPreset() {
   modelForm.model = preset.defaultModel;
   modelForm.baseUrl = preset.baseUrl;
   modelForm.capabilities = defaultCapabilitiesForModel(preset.value, preset.defaultModel);
+  modelForm.maxOutputTokens = preset.defaultMaxOutputTokens ?? 2048;
   if (!modelForm.name || modelPresetNames.has(modelForm.name)) {
     modelForm.name = preset.defaultModel;
   }
@@ -687,20 +702,20 @@ async function testModel(modelId: number) {
   const startedAt = performance.now();
   const modelName = modelNameById(modelId);
   try {
-    const result = await api<{ ok: boolean; message: string; responseText?: string }>(`/api/models/${modelId}/test`, {
+    const result = await api<{ ok: boolean; message: string; responseText?: string; rawResponse?: unknown }>(`/api/models/${modelId}/test`, {
       method: 'POST',
     });
     if (result.ok) {
       const message = result.responseText?.trim() || '调用成功';
       modelTestStates.value = {
         ...modelTestStates.value,
-        [modelId]: { status: 'success', message, latencyMs: Math.round(performance.now() - startedAt) },
+        [modelId]: { status: 'success', message, latencyMs: Math.round(performance.now() - startedAt), rawResponse: result.rawResponse },
       };
       toast.add({ severity: 'success', summary: '模型测试成功', detail: `${modelName}：${message}`, life: 4000 });
     } else {
       modelTestStates.value = {
         ...modelTestStates.value,
-        [modelId]: { status: 'failed', message: result.message, latencyMs: Math.round(performance.now() - startedAt) },
+        [modelId]: { status: 'failed', message: result.message, latencyMs: Math.round(performance.now() - startedAt), rawResponse: result.rawResponse },
       };
       toast.add({ severity: 'error', summary: '模型测试失败', detail: `${modelName}：${result.message}`, life: 7000 });
     }
@@ -1066,6 +1081,22 @@ function closeJsonRecordDialog() {
   jsonRecordDialog.value = null;
 }
 
+function openModelTestRecord(model: ModelConfig) {
+  selectedModelTestRecord.value = {
+    modelName: model.name,
+    payload: modelTestStates.value[model.id]?.rawResponse ?? model.lastTestRawResponse ?? {
+      status: model.lastTestStatus,
+      error: model.lastTestError,
+      latencyMs: model.lastTestLatencyMs,
+      testedAt: model.lastTestedAt,
+    },
+  };
+}
+
+function closeModelTestRecord() {
+  selectedModelTestRecord.value = null;
+}
+
 function formatJson(value: unknown) {
   return JSON.stringify(value ?? null, null, 2);
 }
@@ -1320,6 +1351,10 @@ function modelTestError(model: ModelConfig) {
   return model.lastTestError;
 }
 
+function hasModelTestRecord(model: ModelConfig) {
+  return Boolean(modelTestStates.value[model.id]?.rawResponse || model.lastTestRawResponse || model.lastTestStatus || model.lastTestError);
+}
+
 function isModelTesting(modelId: number) {
   return testingModelIds.value.has(modelId);
 }
@@ -1522,10 +1557,25 @@ function onTabChange(event: TabChangeEvent) {
             <td>{{ formatDateTime(model.lastTestedAt) }}</td>
             <td>
               <div class="row-actions">
-                <button type="button" class="secondary" @click="editModel(model)">编辑</button>
-                <button type="button" class="secondary" :disabled="isModelTesting(model.id)" @click="testModel(model.id)">
-                  {{ isModelTesting(model.id) ? '测试中' : '测试' }}
-                </button>
+                <Button label="编辑" severity="secondary" outlined size="small" @click="editModel(model)" />
+                <Button
+                  :label="isModelTesting(model.id) ? '测试中' : '测试'"
+                  :icon="isModelTesting(model.id) ? 'pi pi-spin pi-spinner' : undefined"
+                  severity="secondary"
+                  outlined
+                  size="small"
+                  :disabled="isModelTesting(model.id)"
+                  @click="testModel(model.id)"
+                />
+                <Button
+                  v-if="hasModelTestRecord(model)"
+                  label="日志"
+                  icon="pi pi-code"
+                  severity="secondary"
+                  text
+                  size="small"
+                  @click="openModelTestRecord(model)"
+                />
               </div>
             </td>
           </tr>
@@ -2057,6 +2107,17 @@ function onTabChange(event: TabChangeEvent) {
       @update:visible="(visible) => { if (!visible) closeJsonRecordDialog(); }"
     >
       <pre class="json-record-content">{{ formatJson(jsonRecordDialog?.payload) }}</pre>
+    </Dialog>
+
+    <Dialog
+      :visible="selectedModelTestRecord !== null"
+      modal
+      class="app-dialog json-record-dialog"
+      :header="selectedModelTestRecord ? `模型测试日志：${selectedModelTestRecord.modelName}` : '模型测试日志'"
+      :style="{ width: 'min(920px, calc(100vw - 32px))' }"
+      @update:visible="(visible) => { if (!visible) closeModelTestRecord(); }"
+    >
+      <pre class="json-record-content">{{ formatJson(selectedModelTestRecord?.payload) }}</pre>
     </Dialog>
 
     <Dialog

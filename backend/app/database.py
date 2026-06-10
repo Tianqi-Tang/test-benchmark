@@ -43,6 +43,7 @@ def _apply_lightweight_migrations() -> None:
         "ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS last_test_status VARCHAR(40)",
         "ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS last_test_latency_ms INTEGER",
         "ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS last_test_error TEXT",
+        "ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS last_test_raw_response JSONB",
         "ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS last_tested_at TIMESTAMP WITH TIME ZONE",
         "ALTER TABLE benchmark_questions ADD COLUMN IF NOT EXISTS max_score DOUBLE PRECISION DEFAULT 1.0",
         "ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS judge_model_config_id INTEGER",

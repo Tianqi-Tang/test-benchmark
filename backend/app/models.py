@@ -29,6 +29,7 @@ class ModelConfig(Base):
     last_test_status: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     last_test_latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     last_test_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_test_raw_response: Mapped[Optional[Dict]] = mapped_column(JSONB, nullable=True)
     last_tested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

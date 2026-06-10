@@ -55,6 +55,7 @@
 | AntAngelMed（安诊儿） | `ant_ling` | `AntAngelMed` | 文本 | 医疗文本模型 |
 | DeepSeek v4 Pro | `deepseek` | `deepseek-v4-pro` | 文本 | OpenAI 兼容接口 |
 | 阿里云百炼 | `qwen` | `qwen3.7-plus` | 文本 | DashScope OpenAI 兼容接口，模型 preset 包含 Qwen、DeepSeek、GLM |
+| NVIDIA NIM | `nvidia` | `deepseek-v4-pro` | 文本 | NVIDIA OpenAI 兼容接口，模型 preset 包含 `deepseek-ai/deepseek-v4-pro`、`deepseek-ai/deepseek-v4-flash` |
 | ChatGPT gpt-5.5 | `openai_responses` | `gpt-5.5` | 文本、多模态 | OpenAI 模型，后端通过 Responses API 调用 |
 | Gemini 3.5 Flash | `gemini` | `gemini-3.5-flash` | 文本、多模态 | Google Gemini |
 
@@ -297,6 +298,8 @@ storage/evaluation-logs/{evaluationRunId}/events.jsonl
 
 - 不允许把 API key、鉴权 cookie、Authorization header 或其他密钥写入日志。
 - 请求日志只能保存经过脱敏后的 provider 请求体。
+- 模型测试接口需要返回并持久化最近一次脱敏调用记录，至少包含 provider、URL、请求 JSON、脱敏 headers、timeout、maxAttempts、响应或错误，便于在模型配置页面直接排查。
+- 逐题评测明细中的原始调用记录需要在成功和失败时都保存脱敏 request；成功时保存 response，失败时保存 error。
 - 如果后续题集包含真实患者隐私数据，需要在导入和日志查看前增加更严格的脱敏或访问控制；当前测试环境先按登录后可查看处理。
 - 日志文件只能通过后端鉴权 API 查看，不能由 nginx 或静态文件服务直接暴露 `storage/` 目录。
 
@@ -391,7 +394,7 @@ storage/evaluation-logs/{evaluationRunId}/events.jsonl
 - LLM provider HTTP 调用、重试、响应解析和错误脱敏集中在 `backend/app/llm/`，业务 API 和评测 runner 只调用统一 client。
 - `apiKey` 不返回明文。
 - provider 适配层参考已验证的内部 provider 形态：
-  - `deepseek`、`qwen`、`qwen_vision` 可按 OpenAI 兼容 Chat Completions 处理；`qwen`/`qwen_vision` 指向阿里云 DashScope 兼容接口。
+  - `deepseek`、`qwen`、`qwen_vision`、`nvidia` 可按 OpenAI 兼容 Chat Completions 处理；`qwen`/`qwen_vision` 指向阿里云 DashScope 兼容接口，`nvidia` 指向 NVIDIA NIM 兼容接口并使用流式响应聚合。
   - `openai_responses` 使用 Responses API。
   - `gemini` 使用 Gemini HTTP API。
   - `ant_ling` 使用其 OpenAI 兼容或指定 HTTP 接口。

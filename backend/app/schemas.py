@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -67,6 +67,7 @@ class ModelConfigOut(BaseModel):
     lastTestStatus: Optional[str]
     lastTestLatencyMs: Optional[int]
     lastTestError: Optional[str]
+    lastTestRawResponse: Optional[dict[str, Any]]
     lastTestedAt: Optional[datetime]
     createdAt: datetime
     updatedAt: datetime
@@ -77,6 +78,7 @@ class ModelTestOut(BaseModel):
     message: str
     latencyMs: Optional[int] = None
     responseText: Optional[str] = None
+    rawResponse: Optional[dict[str, Any]] = None
 
 
 class ModelScoreOut(BaseModel):

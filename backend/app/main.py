@@ -150,12 +150,24 @@ def test_model(model_id: int, _: None = Depends(require_session), db: Session = 
     model_config.last_test_status = "success" if result.ok else "failed"
     model_config.last_test_latency_ms = result.latency_ms
     model_config.last_test_error = None if result.ok else result.error or "Model call failed."
+    model_config.last_test_raw_response = result.raw_response
     model_config.last_tested_at = datetime.now(timezone.utc)
     db.commit()
     if not result.ok:
-        return ModelTestOut(ok=False, message=result.error or "Model call failed.", latencyMs=result.latency_ms)
+        return ModelTestOut(
+            ok=False,
+            message=result.error or "Model call failed.",
+            latencyMs=result.latency_ms,
+            rawResponse=result.raw_response,
+        )
     response_text = (result.text or "").strip() or None
-    return ModelTestOut(ok=True, message="Model call succeeded.", latencyMs=result.latency_ms, responseText=response_text)
+    return ModelTestOut(
+        ok=True,
+        message="Model call succeeded.",
+        latencyMs=result.latency_ms,
+        responseText=response_text,
+        rawResponse=result.raw_response,
+    )
 
 
 @app.get("/api/benchmark-sets", response_model=list[BenchmarkSetOut])
@@ -551,6 +563,7 @@ def _model_out(row: ModelConfig) -> ModelConfigOut:
         lastTestStatus=row.last_test_status,
         lastTestLatencyMs=row.last_test_latency_ms,
         lastTestError=row.last_test_error,
+        lastTestRawResponse=row.last_test_raw_response,
         lastTestedAt=row.last_tested_at,
         createdAt=row.created_at,
         updatedAt=row.updated_at,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any
@@ -14,6 +15,7 @@ DEFAULT_BASE_URLS = {
     "deepseek": "https://api.deepseek.com",
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "qwen_vision": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "nvidia": "https://integrate.api.nvidia.com/v1",
     "openai": "https://api.openai.com/v1",
     "openai_responses": "https://api.openai.com/v1",
     "gemini": "https://generativelanguage.googleapis.com",
@@ -26,6 +28,20 @@ MODEL_ALIASES = {
     "Gemini-3.5-pro": "gemini-3.5-pro",
 }
 
+PROVIDER_MODEL_ALIASES = {
+    "nvidia": {
+        "deepseek-v4-pro": "deepseek-ai/deepseek-v4-pro",
+        "deepseek-v4-flash": "deepseek-ai/deepseek-v4-flash",
+    },
+}
+
+PROVIDER_MODEL_CHAT_TEMPLATE_KWARGS = {
+    "nvidia": {
+        "deepseek-v4-pro": {"thinking": False},
+        "deepseek-v4-flash": {"thinking": False},
+    },
+}
+
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 RETRYABLE_TRANSPORT_ERRORS = (
     httpx.ConnectError,
@@ -35,8 +51,17 @@ RETRYABLE_TRANSPORT_ERRORS = (
 )
 MAX_ATTEMPTS = 3
 REQUEST_TIMEOUT_SECONDS = 30.0
+PROVIDER_TIMEOUT_SECONDS = {
+    "nvidia": 120.0,
+}
 SENSITIVE_QUERY_RE = re.compile(r"([?&](?:key|api_key|access_token)=)[^&\s'\"]+")
 BEARER_TOKEN_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+")
+
+
+class ProviderCallError(RuntimeError):
+    def __init__(self, message: str, request: dict[str, Any]):
+        super().__init__(message)
+        self.request = request
 
 
 def call_provider(
@@ -44,7 +69,7 @@ def call_provider(
     prompt: str,
     max_output_tokens: int | None,
     max_attempts: int = MAX_ATTEMPTS,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
     if config.provider == "openai_responses":
         return _call_openai_responses(config, prompt, max_output_tokens, max_attempts)
     if config.provider == "gemini":
@@ -61,6 +86,10 @@ def _base_url(config: ModelConfig) -> str:
     return (config.base_url or DEFAULT_BASE_URLS.get(config.provider, "")).rstrip("/")
 
 
+def _request_timeout(config: ModelConfig) -> float:
+    return PROVIDER_TIMEOUT_SECONDS.get(config.provider, REQUEST_TIMEOUT_SECONDS)
+
+
 def _with_v1(url: str) -> str:
     return url if url.endswith("/v1") else f"{url}/v1"
 
@@ -75,8 +104,53 @@ def _headers(config: ModelConfig) -> dict[str, str]:
     }
 
 
+def _redacted_headers(headers: dict[str, str]) -> dict[str, str]:
+    return {
+        key: ("Bearer ***" if key.lower() == "authorization" else "***" if key.lower() == "x-goog-api-key" else value)
+        for key, value in headers.items()
+    }
+
+
+def _request_record(
+    *,
+    provider: str,
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    max_attempts: int,
+    params: dict[str, Any] | None = None,
+    timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "url": sanitize_error_message(url),
+        "method": "POST",
+        "headers": _redacted_headers(headers),
+        "params": _redacted_params(params),
+        "json": payload,
+        "timeoutSeconds": timeout_seconds,
+        "maxAttempts": max_attempts,
+    }
+
+
+def _redacted_params(params: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not params:
+        return None
+    return {
+        key: "***" if key.lower() in {"key", "api_key", "access_token"} else value
+        for key, value in params.items()
+    }
+
+
 def _model_name(config: ModelConfig) -> str:
+    provider_aliases = PROVIDER_MODEL_ALIASES.get(config.provider, {})
+    if config.model in provider_aliases:
+        return provider_aliases[config.model]
     return MODEL_ALIASES.get(config.model, config.model)
+
+
+def _chat_template_kwargs(config: ModelConfig) -> dict[str, Any] | None:
+    return PROVIDER_MODEL_CHAT_TEMPLATE_KWARGS.get(config.provider, {}).get(config.model)
 
 
 def _max_output_tokens(config: ModelConfig, override: int | None) -> int:
@@ -109,25 +183,83 @@ def _call_openai_compatible(
     prompt: str,
     max_output_tokens: int | None,
     max_attempts: int,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
     base_url = _with_v1(_base_url(config))
+    url = f"{base_url}/chat/completions"
     payload = {
         "model": _model_name(config),
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0,
         "max_tokens": _max_output_tokens(config, max_output_tokens),
     }
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
-        response = _post_with_retry(
-            client,
-            f"{base_url}/chat/completions",
-            max_attempts=max_attempts,
-            headers=_headers(config),
-            json=payload,
-        )
+    chat_template_kwargs = _chat_template_kwargs(config)
+    if chat_template_kwargs:
+        payload["chat_template_kwargs"] = chat_template_kwargs
+    if config.provider == "nvidia":
+        payload["stream"] = True
+    headers = _headers(config)
+    timeout_seconds = _request_timeout(config)
+    request = _request_record(
+        provider=config.provider,
+        url=url,
+        headers=headers,
+        payload=payload,
+        max_attempts=max_attempts,
+        timeout_seconds=timeout_seconds,
+    )
+    with httpx.Client(timeout=timeout_seconds) as client:
+        try:
+            if config.provider == "nvidia":
+                text, raw = _stream_chat_completion(client, url, headers, payload)
+                return text, raw, request
+            response = _post_with_retry(
+                client,
+                url,
+                max_attempts=max_attempts,
+                headers=headers,
+                json=payload,
+            )
+        except Exception as exc:
+            raise ProviderCallError(str(exc), request) from exc
     raw = response.json()
     text = raw.get("choices", [{}])[0].get("message", {}).get("content") or ""
-    return text.strip(), raw
+    return text.strip(), raw, request
+
+
+def _stream_chat_completion(
+    client: httpx.Client,
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    chunks: list[dict[str, Any]] = []
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    with client.stream("POST", url, headers=headers, json=payload) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line:
+                continue
+            if line.startswith("data:"):
+                line = line.removeprefix("data:").strip()
+            if line == "[DONE]":
+                break
+            chunk = json.loads(line)
+            chunks.append(chunk)
+            delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+            content = delta.get("content")
+            if isinstance(content, str):
+                content_parts.append(content)
+            reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+            if isinstance(reasoning, str):
+                reasoning_parts.append(reasoning)
+    text = "".join(content_parts).strip()
+    return text, {
+        "stream": True,
+        "chunks": chunks,
+        "text": text,
+        "reasoning": "".join(reasoning_parts).strip() or None,
+    }
 
 
 def _call_openai_responses(
@@ -135,24 +267,38 @@ def _call_openai_responses(
     prompt: str,
     max_output_tokens: int | None,
     max_attempts: int,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
     base_url = _with_v1(_base_url(config))
+    url = f"{base_url}/responses"
     payload = {
         "model": _model_name(config),
         "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
         "max_output_tokens": _max_output_tokens(config, max_output_tokens),
         "store": False,
     }
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
-        response = _post_with_retry(
-            client,
-            f"{base_url}/responses",
-            max_attempts=max_attempts,
-            headers=_headers(config),
-            json=payload,
-        )
+    headers = _headers(config)
+    timeout_seconds = _request_timeout(config)
+    request = _request_record(
+        provider=config.provider,
+        url=url,
+        headers=headers,
+        payload=payload,
+        max_attempts=max_attempts,
+        timeout_seconds=timeout_seconds,
+    )
+    with httpx.Client(timeout=timeout_seconds) as client:
+        try:
+            response = _post_with_retry(
+                client,
+                url,
+                max_attempts=max_attempts,
+                headers=headers,
+                json=payload,
+            )
+        except Exception as exc:
+            raise ProviderCallError(str(exc), request) from exc
     raw = response.json()
-    return _extract_responses_text(raw), raw
+    return _extract_responses_text(raw), raw, request
 
 
 def _extract_responses_text(raw: dict[str, Any]) -> str:
@@ -177,7 +323,7 @@ def _call_gemini(
     prompt: str,
     max_output_tokens: int | None,
     max_attempts: int,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
     api_key = (config.api_key or "").strip()
     if not api_key:
         raise ValueError("API key is not configured.")
@@ -190,16 +336,31 @@ def _call_gemini(
         },
     }
     url = f"{base_url}/v1beta/models/{_model_name(config)}:generateContent"
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
-        response = _post_with_retry(
-            client,
-            url,
-            max_attempts=max_attempts,
-            params={"key": api_key},
-            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-            json=payload,
-        )
+    params = {"key": api_key}
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    timeout_seconds = _request_timeout(config)
+    request = _request_record(
+        provider=config.provider,
+        url=url,
+        headers=headers,
+        params=params,
+        payload=payload,
+        max_attempts=max_attempts,
+        timeout_seconds=timeout_seconds,
+    )
+    with httpx.Client(timeout=timeout_seconds) as client:
+        try:
+            response = _post_with_retry(
+                client,
+                url,
+                max_attempts=max_attempts,
+                params=params,
+                headers=headers,
+                json=payload,
+            )
+        except Exception as exc:
+            raise ProviderCallError(str(exc), request) from exc
     raw = response.json()
     parts = raw.get("candidates", [{}])[0].get("content", {}).get("parts", []) or []
     text = "\n".join(str(part.get("text", "")) for part in parts if isinstance(part, dict)).strip()
-    return text, raw
+    return text, raw, request

@@ -10,4 +10,5 @@ class LlmCallResult:
     text: str | None
     latency_ms: int
     raw_response: dict[str, Any] | None = None
+    request: dict[str, Any] | None = None
     error: str | None = None

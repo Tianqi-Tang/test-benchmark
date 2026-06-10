@@ -3,6 +3,8 @@ import pytest
 
 from app.database import _database_url
 from app.evaluation_runner import PROGRESS_COMPLETED_STATUSES
+from app.llm import providers
+from app.llm.client import call_model
 from app.main import _capability_values, _model_score_out, _result_is_retryable, app
 from app.models import BenchmarkQuestion, EvaluationResult, ModelConfig
 from app.scoring import normalize_choice, score_answer
@@ -102,6 +104,123 @@ def test_model_config_create_rejects_blank_name_after_trim():
 def test_model_config_update_rejects_blank_name_after_trim():
     with pytest.raises(ValueError):
         ModelConfigUpdate(name="   ")
+
+
+def test_nvidia_provider_uses_nim_model_alias_and_payload(monkeypatch):
+    captured = {}
+
+    def fake_stream_chat_completion(_client, url, headers, payload):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["payload"] = payload
+        return "OK", {"stream": True, "text": "OK", "chunks": []}
+
+    monkeypatch.setattr(providers, "_stream_chat_completion", fake_stream_chat_completion)
+    config = ModelConfig(
+        provider="nvidia",
+        model="deepseek-v4-pro",
+        api_key="nvidia-key",
+        max_output_tokens=16384,
+    )
+
+    text, _raw, request = providers.call_provider(config, "hello", None, max_attempts=1)
+
+    payload = captured["payload"]
+    assert text == "OK"
+    assert captured["url"] == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer nvidia-key"
+    assert request["url"] == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert request["headers"]["Authorization"] == "Bearer ***"
+    assert payload["model"] == "deepseek-ai/deepseek-v4-pro"
+    assert request["json"]["model"] == "deepseek-ai/deepseek-v4-pro"
+    assert payload["max_tokens"] == 16384
+    assert payload["chat_template_kwargs"] == {"thinking": False}
+    assert payload["stream"] is True
+    assert "extra_body" not in payload
+
+
+def test_nvidia_flash_uses_streaming_payload(monkeypatch):
+    captured = {}
+
+    def fake_stream_chat_completion(_client, url, headers, payload):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["payload"] = payload
+        return "OK", {"stream": True, "text": "OK", "chunks": []}
+
+    monkeypatch.setattr(providers, "_stream_chat_completion", fake_stream_chat_completion)
+    config = ModelConfig(
+        provider="nvidia",
+        model="deepseek-v4-flash",
+        api_key="nvidia-key",
+        max_output_tokens=16384,
+    )
+
+    text, _raw, request = providers.call_provider(config, "hello", None, max_attempts=1)
+
+    payload = captured["payload"]
+    assert text == "OK"
+    assert payload["model"] == "deepseek-ai/deepseek-v4-flash"
+    assert request["json"]["model"] == "deepseek-ai/deepseek-v4-flash"
+    assert payload["chat_template_kwargs"] == {"thinking": False}
+    assert payload["stream"] is True
+
+
+def test_nvidia_stream_response_is_aggregated():
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            return iter(
+                [
+                    'data: {"choices":[{"delta":{"content":"O","reasoning_content":null}}]}',
+                    'data: {"choices":[{"delta":{"content":"K","reasoning_content":null}}]}',
+                    "data: [DONE]",
+                ]
+            )
+
+    class FakeClient:
+        def stream(self, _method, _url, headers=None, json=None):
+            return FakeStream()
+
+    text, raw = providers._stream_chat_completion(FakeClient(), "https://example.test", {}, {})
+
+    assert text == "OK"
+    assert raw["stream"] is True
+    assert raw["text"] == "OK"
+    assert len(raw["chunks"]) == 2
+
+
+def test_failed_model_call_keeps_redacted_request_log(monkeypatch):
+    def fake_stream_chat_completion(_client, _url, _headers, _payload):
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(providers, "_stream_chat_completion", fake_stream_chat_completion)
+    config = ModelConfig(
+        provider="nvidia",
+        model="deepseek-v4-pro",
+        api_key="nvidia-key",
+        max_output_tokens=16384,
+    )
+
+    result = call_model(config, "hello", max_attempts=1)
+
+    request = result.raw_response["request"]
+    assert result.ok is False
+    assert result.error == "The read operation timed out"
+    assert result.raw_response["error"] == "The read operation timed out"
+    assert request["url"] == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert request["headers"]["Authorization"] == "Bearer ***"
+    assert request["json"]["model"] == "deepseek-ai/deepseek-v4-pro"
+    assert request["json"]["chat_template_kwargs"] == {"thinking": False}
+    assert request["json"]["stream"] is True
 
 
 def test_model_score_out_includes_unevaluated_model():
