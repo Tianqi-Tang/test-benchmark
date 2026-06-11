@@ -188,6 +188,60 @@ def test_nvidia_flash_uses_streaming_payload(monkeypatch):
     assert payload["stream"] is True
 
 
+def test_openrouter_claude_fable_uses_anthropic_provider_route(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+    def fake_post_with_retry(client, url, max_attempts=1, **kwargs):
+        captured["client"] = client
+        captured["url"] = url
+        captured["max_attempts"] = max_attempts
+        captured["headers"] = kwargs["headers"]
+        captured["payload"] = kwargs["json"]
+        return FakeResponse()
+
+    monkeypatch.setattr(providers.httpx, "Client", FakeClient)
+    monkeypatch.setattr(providers, "_post_with_retry", fake_post_with_retry)
+    config = ModelConfig(
+        provider="openrouter",
+        model="anthropic/claude-fable-5",
+        api_key="openrouter-key",
+        max_output_tokens=128000,
+    )
+
+    text, _raw, request = providers.call_provider(config, "hello", None, max_attempts=1)
+
+    payload = captured["payload"]
+    assert text == "OK"
+    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer openrouter-key"
+    assert request["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert request["headers"]["Authorization"] == "Bearer ***"
+    assert payload["model"] == "anthropic/claude-fable-5"
+    assert payload["max_tokens"] == 128000
+    assert payload["provider"] == {"only": ["anthropic"], "allow_fallbacks": False}
+    assert request["json"]["provider"] == {"only": ["anthropic"], "allow_fallbacks": False}
+    assert "stream" not in payload
+
+
 def test_nvidia_stream_response_is_aggregated():
     class FakeStream:
         def __enter__(self):

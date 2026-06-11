@@ -43,6 +43,17 @@ PROVIDER_MODEL_CHAT_TEMPLATE_KWARGS = {
     },
 }
 
+PROVIDER_MODEL_REQUEST_PARAMS = {
+    "openrouter": {
+        "anthropic/claude-fable-5": {
+            "provider": {
+                "only": ["anthropic"],
+                "allow_fallbacks": False,
+            },
+        },
+    },
+}
+
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 RETRYABLE_TRANSPORT_ERRORS = (
     httpx.ConnectError,
@@ -154,6 +165,10 @@ def _chat_template_kwargs(config: ModelConfig) -> dict[str, Any] | None:
     return PROVIDER_MODEL_CHAT_TEMPLATE_KWARGS.get(config.provider, {}).get(config.model)
 
 
+def _request_params(config: ModelConfig) -> dict[str, Any] | None:
+    return PROVIDER_MODEL_REQUEST_PARAMS.get(config.provider, {}).get(config.model)
+
+
 def _max_output_tokens(config: ModelConfig, override: int | None) -> int:
     return override if override is not None else config.max_output_tokens
 
@@ -196,6 +211,9 @@ def _call_openai_compatible(
     chat_template_kwargs = _chat_template_kwargs(config)
     if chat_template_kwargs:
         payload["chat_template_kwargs"] = chat_template_kwargs
+    request_params = _request_params(config)
+    if request_params:
+        payload.update(request_params)
     if config.provider == "nvidia":
         payload["stream"] = True
     headers = _headers(config)

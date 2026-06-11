@@ -335,11 +335,11 @@ const providerOptions: ProviderOption[] = [
     value: 'openrouter',
     label: 'OpenRouter',
     shortLabel: 'OpenRouter',
-    defaultModel: 'google/gemini-3.5-flash',
-    modelOptions: ['google/gemini-3.5-flash'],
+    defaultModel: 'anthropic/claude-fable-5',
+    modelOptions: ['anthropic/claude-fable-5', 'google/gemini-3.5-flash'],
     baseUrl: 'https://openrouter.ai/api/v1',
-    defaultCapabilities: ['text', 'vision'],
-    defaultMaxOutputTokens: 65536,
+    defaultCapabilities: ['text'],
+    defaultMaxOutputTokens: 128000,
   },
 ];
 
@@ -1447,6 +1447,9 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
   }
   if (provider === 'openrouter' && model === 'google/gemini-3.5-flash') {
     return ['text', 'vision'];
+  }
+  if (provider === 'openrouter' && model === 'anthropic/claude-fable-5') {
+    return ['text'];
   }
   if (provider === 'qwen' && (model === 'qwen3.7-plus' || model.includes('-vl-'))) {
     return ['text', 'vision'];
