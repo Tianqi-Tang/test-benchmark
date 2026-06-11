@@ -97,6 +97,27 @@ def test_model_config_create_trims_required_strings():
     assert payload.model == "deepseek-v4-pro"
 
 
+def test_model_config_allows_large_max_output_tokens():
+    payload = ModelConfigCreate(
+        name="Large Context",
+        provider="openai_responses",
+        model="large-output-model",
+        maxOutputTokens=200000,
+    )
+
+    assert payload.maxOutputTokens == 200000
+
+
+def test_model_config_rejects_extreme_max_output_tokens():
+    with pytest.raises(ValueError):
+        ModelConfigCreate(
+            name="Too Large",
+            provider="openai_responses",
+            model="large-output-model",
+            maxOutputTokens=1048577,
+        )
+
+
 def test_model_config_create_rejects_blank_name_after_trim():
     with pytest.raises(ValueError):
         ModelConfigCreate(name="   ", provider="deepseek", model="deepseek-v4-pro")

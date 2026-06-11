@@ -208,6 +208,7 @@ const error = ref('');
 const confirm = useConfirm();
 const toast = useToast();
 const vTooltip = Tooltip;
+const maxOutputTokensLimit = 1048576;
 
 const tabMenuItems = computed(() => tabs.map((tab) => ({ label: tab.label })));
 const activeTabIndex = computed(() => {
@@ -329,6 +330,16 @@ const providerOptions: ProviderOption[] = [
     modelOptions: ['gemini-3.5-flash', 'gemini-3.5-pro', 'gemini-2.0-flash'],
     baseUrl: 'https://generativelanguage.googleapis.com',
     defaultCapabilities: ['text', 'vision'],
+  },
+  {
+    value: 'openrouter',
+    label: 'OpenRouter',
+    shortLabel: 'OpenRouter',
+    defaultModel: 'google/gemini-3.5-flash',
+    modelOptions: ['google/gemini-3.5-flash'],
+    baseUrl: 'https://openrouter.ai/api/v1',
+    defaultCapabilities: ['text', 'vision'],
+    defaultMaxOutputTokens: 65536,
   },
 ];
 
@@ -1434,6 +1445,9 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
   if (provider === 'gemini') {
     return ['text', 'vision'];
   }
+  if (provider === 'openrouter' && model === 'google/gemini-3.5-flash') {
+    return ['text', 'vision'];
+  }
   if (provider === 'qwen' && (model === 'qwen3.7-plus' || model.includes('-vl-'))) {
     return ['text', 'vision'];
   }
@@ -2189,7 +2203,7 @@ function onTabChange(event: TabChangeEvent) {
         </div>
         <label class="form-field">
           <span class="field-label">Max Output Tokens</span>
-          <InputNumber v-model="modelForm.maxOutputTokens" :min="128" :max="32768" fluid />
+          <InputNumber v-model="modelForm.maxOutputTokens" :min="128" :max="maxOutputTokensLimit" fluid />
         </label>
         <label class="checkbox-row prime-checkbox-row">
           <Checkbox v-model="modelForm.enabled" binary input-id="model-enabled" />

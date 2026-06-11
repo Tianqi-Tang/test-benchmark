@@ -59,6 +59,7 @@
 | NVIDIA NIM | `nvidia` | `deepseek-v4-pro` | 文本 | NVIDIA OpenAI 兼容接口，模型 preset 包含 `deepseek-ai/deepseek-v4-pro`、`deepseek-ai/deepseek-v4-flash` |
 | ChatGPT gpt-5.5 | `openai_responses` | `gpt-5.5` | 文本、多模态 | OpenAI 模型，后端通过 Responses API 调用 |
 | Gemini 3.5 Flash | `gemini` | `gemini-3.5-flash` | 文本、多模态 | Google Gemini |
+| OpenRouter Gemini 3.5 Flash | `openrouter` | `google/gemini-3.5-flash` | 文本、多模态 | OpenRouter OpenAI 兼容接口，第一版只提供 Gemini 3.5 Flash preset |
 
 ### 多模态模型
 
@@ -69,6 +70,7 @@
 | 阿里云百炼多模态 | `qwen_vision` | `qwen3.7-plus` | 文本、多模态 |
 | ChatGPT gpt-5.5 | `openai_responses` | `gpt-5.5` | 文本、多模态 |
 | Gemini 3.5 Flash | `gemini` | `gemini-3.5-flash` | 文本、多模态 |
+| OpenRouter Gemini 3.5 Flash | `openrouter` | `google/gemini-3.5-flash` | 文本、多模态 |
 
 模型能力选项始终开放给用户勾选；provider/model preset 只负责给出默认能力，不隐藏其他能力选项。
 
@@ -167,7 +169,7 @@ Judge 模型选择：
 - `api_key`
 - `capability`，第一版存储为逗号分隔能力值，例如 `text,vision`
 - `enabled`
-- `max_output_tokens`
+- `max_output_tokens`，平台只做防误填的宽松上限，第一版允许配置到 `1048576`；实际可用上限由 provider 和模型决定，通过模型测试或评测调用暴露错误。
 - `created_at`
 - `updated_at`
 
@@ -395,7 +397,7 @@ storage/evaluation-logs/{evaluationRunId}/events.jsonl
 - LLM provider HTTP 调用、重试、响应解析和错误脱敏集中在 `backend/app/llm/`，业务 API 和评测 runner 只调用统一 client。
 - `apiKey` 不返回明文。
 - provider 适配层参考已验证的内部 provider 形态：
-  - `deepseek`、`qwen`、`qwen_vision`、`nvidia` 可按 OpenAI 兼容 Chat Completions 处理；`qwen`/`qwen_vision` 指向阿里云 DashScope 兼容接口，`nvidia` 指向 NVIDIA NIM 兼容接口并使用流式响应聚合。
+  - `deepseek`、`qwen`、`qwen_vision`、`nvidia`、`openrouter` 可按 OpenAI 兼容 Chat Completions 处理；`qwen`/`qwen_vision` 指向阿里云 DashScope 兼容接口，`nvidia` 指向 NVIDIA NIM 兼容接口并使用流式响应聚合，`openrouter` 第一版只配置 `google/gemini-3.5-flash` preset。
   - `openai_responses` 使用 Responses API。
   - `gemini` 使用 Gemini HTTP API。
   - `ant_ling` 使用其 OpenAI 兼容或指定 HTTP 接口。

@@ -6,6 +6,9 @@ from typing import Any, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+MAX_OUTPUT_TOKENS_LIMIT = 1048576
+
+
 class LoginRequest(BaseModel):
     password: str = Field(min_length=1)
 
@@ -23,7 +26,7 @@ class ModelConfigCreate(BaseModel):
     apiKey: Optional[str] = None
     capability: str = "text"
     enabled: bool = True
-    maxOutputTokens: int = Field(default=2048, ge=128, le=32768)
+    maxOutputTokens: int = Field(default=2048, ge=128, le=MAX_OUTPUT_TOKENS_LIMIT)
 
     @field_validator("name", "provider", "model", mode="before")
     @classmethod
@@ -42,7 +45,7 @@ class ModelConfigUpdate(BaseModel):
     clearApiKey: bool = False
     capability: Optional[str] = None
     enabled: Optional[bool] = None
-    maxOutputTokens: Optional[int] = Field(default=None, ge=128, le=32768)
+    maxOutputTokens: Optional[int] = Field(default=None, ge=128, le=MAX_OUTPUT_TOKENS_LIMIT)
 
     @field_validator("name", "provider", "model", mode="before")
     @classmethod
