@@ -38,6 +38,16 @@ RUN_LOG_PATH: Path | None = None
 CALL_LOG_PATH: Path | None = None
 
 
+PAYMENT_ERROR_PATTERNS = (
+    "402",
+    "payment required",
+    "insufficient credit",
+    "insufficient credits",
+    "insufficient balance",
+    "insufficient funds",
+)
+
+
 @dataclass(frozen=True)
 class ModelTarget:
     display_name: str
@@ -70,6 +80,11 @@ MODEL_TARGETS = {
     "Gemini-3.5-flash": ModelTarget("Gemini-3.5-flash", ("openrouter",), ("google/gemini-3.5-flash",)),
     "Gemini-3.5-flash-Google": ModelTarget("Gemini-3.5-flash", ("gemini",), ("Gemini-3.5-flash", "gemini-3.5-flash")),
 }
+
+
+def is_payment_error(error: str | None) -> bool:
+    text = (error or "").lower()
+    return any(pattern in text for pattern in PAYMENT_ERROR_PATTERNS)
 
 
 def main() -> int:
@@ -338,6 +353,12 @@ def run_model_file(selected_model: SelectedModel, source_path: Path, args: argpa
             failures += 1
             consecutive_failures += 1
             log(f"{log_prefix} [{index}/{total}] call failed latency={result.latency_ms}ms error={result.error}")
+            if is_payment_error(result.error):
+                log(
+                    f"{log_prefix} payment-related error detected; "
+                    "stop this model/file and rerun after billing is fixed"
+                )
+                break
             continue
 
         answer = normalize_text(result.text)

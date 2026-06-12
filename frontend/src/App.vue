@@ -336,7 +336,7 @@ const providerOptions: ProviderOption[] = [
     label: 'OpenRouter',
     shortLabel: 'OpenRouter',
     defaultModel: 'anthropic/claude-fable-5',
-    modelOptions: ['anthropic/claude-fable-5', 'google/gemini-3.5-flash'],
+    modelOptions: ['anthropic/claude-fable-5', 'qwen/qwen3.7-plus', 'google/gemini-3.5-flash'],
     baseUrl: 'https://openrouter.ai/api/v1',
     defaultCapabilities: ['text'],
     defaultMaxOutputTokens: 128000,
@@ -593,7 +593,7 @@ function applyProviderPreset() {
   modelForm.model = preset.defaultModel;
   modelForm.baseUrl = preset.baseUrl;
   modelForm.capabilities = defaultCapabilitiesForModel(preset.value, preset.defaultModel);
-  modelForm.maxOutputTokens = preset.defaultMaxOutputTokens ?? 2048;
+  modelForm.maxOutputTokens = defaultMaxOutputTokensForModel(preset.value, preset.defaultModel);
   if (!modelForm.name || modelPresetNames.has(modelForm.name)) {
     modelForm.name = preset.defaultModel;
   }
@@ -601,6 +601,7 @@ function applyProviderPreset() {
 
 function applyModelPreset() {
   modelForm.capabilities = defaultCapabilitiesForModel(modelForm.provider, modelForm.model);
+  modelForm.maxOutputTokens = defaultMaxOutputTokensForModel(modelForm.provider, modelForm.model);
   if (!modelForm.name || modelPresetNames.has(modelForm.name)) {
     modelForm.name = modelForm.model;
   }
@@ -1448,6 +1449,9 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
   if (provider === 'openrouter' && model === 'google/gemini-3.5-flash') {
     return ['text', 'vision'];
   }
+  if (provider === 'openrouter' && model === 'qwen/qwen3.7-plus') {
+    return ['text', 'vision'];
+  }
   if (provider === 'openrouter' && model === 'anthropic/claude-fable-5') {
     return ['text'];
   }
@@ -1455,6 +1459,16 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
     return ['text', 'vision'];
   }
   return providerOption(provider)?.defaultCapabilities ?? ['text'];
+}
+
+function defaultMaxOutputTokensForModel(provider: string, model: string) {
+  if (provider === 'openrouter' && model === 'anthropic/claude-fable-5') {
+    return 128000;
+  }
+  if (provider === 'openrouter' && (model === 'google/gemini-3.5-flash' || model === 'qwen/qwen3.7-plus')) {
+    return 65536;
+  }
+  return providerOption(provider)?.defaultMaxOutputTokens ?? 2048;
 }
 
 function onTabChange(event: TabChangeEvent) {
