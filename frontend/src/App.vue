@@ -335,10 +335,10 @@ const providerOptions: ProviderOption[] = [
     value: 'openrouter',
     label: 'OpenRouter',
     shortLabel: 'OpenRouter',
-    defaultModel: 'anthropic/claude-fable-5',
-    modelOptions: ['anthropic/claude-fable-5', 'qwen/qwen3.7-plus', 'google/gemini-3.5-flash'],
+    defaultModel: 'openai/gpt-5.5',
+    modelOptions: ['openai/gpt-5.5', 'openai/gpt-5.5-pro', 'deepseek/deepseek-v4-pro', 'anthropic/claude-fable-5', 'qwen/qwen3.7-plus', 'google/gemini-3.5-flash'],
     baseUrl: 'https://openrouter.ai/api/v1',
-    defaultCapabilities: ['text'],
+    defaultCapabilities: ['text', 'vision'],
     defaultMaxOutputTokens: 128000,
   },
 ];
@@ -1452,6 +1452,9 @@ function defaultCapabilitiesForModel(provider: string, model: string): Capabilit
   if (provider === 'openrouter' && model === 'qwen/qwen3.7-plus') {
     return ['text', 'vision'];
   }
+  if (provider === 'openrouter' && (model === 'openai/gpt-5.5' || model === 'openai/gpt-5.5-pro')) {
+    return ['text', 'vision'];
+  }
   if (provider === 'openrouter' && model === 'anthropic/claude-fable-5') {
     return ['text'];
   }
@@ -1465,7 +1468,10 @@ function defaultMaxOutputTokensForModel(provider: string, model: string) {
   if (provider === 'openrouter' && model === 'anthropic/claude-fable-5') {
     return 128000;
   }
-  if (provider === 'openrouter' && (model === 'google/gemini-3.5-flash' || model === 'qwen/qwen3.7-plus')) {
+  if (
+    provider === 'openrouter' &&
+    (model === 'openai/gpt-5.5' || model === 'openai/gpt-5.5-pro' || model === 'google/gemini-3.5-flash' || model === 'qwen/qwen3.7-plus')
+  ) {
     return 65536;
   }
   return providerOption(provider)?.defaultMaxOutputTokens ?? 2048;

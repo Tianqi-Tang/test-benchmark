@@ -242,7 +242,16 @@ def test_openrouter_claude_fable_uses_anthropic_provider_route(monkeypatch):
     assert "stream" not in payload
 
 
-def test_openrouter_qwen_plus_uses_default_provider_route(monkeypatch):
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "qwen/qwen3.7-plus",
+        "openai/gpt-5.5",
+        "openai/gpt-5.5-pro",
+        "deepseek/deepseek-v4-pro",
+    ],
+)
+def test_openrouter_default_provider_route_uses_requested_model(monkeypatch, model_name):
     captured = {}
 
     class FakeClient:
@@ -276,7 +285,7 @@ def test_openrouter_qwen_plus_uses_default_provider_route(monkeypatch):
     monkeypatch.setattr(providers, "_post_with_retry", fake_post_with_retry)
     config = ModelConfig(
         provider="openrouter",
-        model="qwen/qwen3.7-plus",
+        model=model_name,
         api_key="openrouter-key",
         max_output_tokens=65536,
     )
@@ -288,7 +297,7 @@ def test_openrouter_qwen_plus_uses_default_provider_route(monkeypatch):
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer openrouter-key"
     assert request["headers"]["Authorization"] == "Bearer ***"
-    assert payload["model"] == "qwen/qwen3.7-plus"
+    assert payload["model"] == model_name
     assert payload["max_tokens"] == 65536
     assert "provider" not in payload
     assert "stream" not in payload
