@@ -24,7 +24,7 @@ http://20.2.81.240/test-benchmark/
 
 ## GitHub Actions
 
-`main` 分支 push 后应执行：
+当前暂不自动部署。流水线配置保留在仓库中，只允许通过 GitHub Actions 手动触发 `workflow_dispatch` 执行：
 
 1. 使用 `uv` 安装后端依赖。
 2. 运行后端测试。
@@ -34,6 +34,7 @@ http://20.2.81.240/test-benchmark/
 6. 将前后端容器接入 nginx 所在 Docker 网络。
 7. 校验后端 health 和前端页面可访问。
 8. 校验公网子路径 API：`/test-benchmark/api/health`。
+9. 部署校验成功后执行 `docker image prune -f`，清理服务器上不再被容器使用的 dangling 旧镜像。
 
 仓库 secret：
 

@@ -1,9 +1,6 @@
 name: CI and Deploy
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 env:
@@ -120,3 +117,8 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
             "curl -fsS http://localhost:18111/health && curl -fsS http://localhost:18110/ && curl -fsS http://localhost/test-benchmark/api/health"
+
+      - name: Clean up old Docker images
+        run: |
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            "docker image prune -f"
