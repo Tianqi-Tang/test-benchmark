@@ -24,12 +24,17 @@ http://20.2.81.240/test-benchmark/
 
 ## GitHub Actions
 
-当前暂不自动部署。流水线配置保留在仓库中，只允许通过 GitHub Actions 手动触发 `workflow_dispatch` 执行：
+`main` 分支 push 后只执行 CI 和构建，不自动部署到测试环境。测试环境部署配置保留在同一 workflow 中，只允许通过 GitHub Actions 手动触发 `workflow_dispatch` 执行部署。
+
+自动 CI/构建步骤：
 
 1. 使用 `uv` 安装后端依赖。
 2. 运行后端测试。
 3. 安装前端依赖并构建 Vue 3 前端。
 4. 构建 Docker 镜像。
+
+手动部署步骤：
+
 5. 通过 SSH 部署到测试服务器。
 6. 将前后端容器接入 nginx 所在 Docker 网络。
 7. 校验后端 health 和前端页面可访问。
